@@ -13,19 +13,26 @@ export function parseInstructions(code: string): Instruction[] {
   return lines.map((line, index) => {
     const cleaned = line.trim().replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ');
     const parts = cleaned.split(/\s+/).filter(p => p);
+    console.log(`Parsing line ${index}: "${line}" -> parts:`, parts);
     // Handle split opcode tokens like "L. D" or "ADD. D" by merging
     let opcode = parts[0].toUpperCase();
     if (opcode.endsWith('.') && parts.length > 1 && parts[1].length === 1) {
       opcode = (opcode + parts[1].toUpperCase());
+      parts[0] = opcode; // update the opcode in place
       parts.splice(1, 1); // remove the next token as it's merged into opcode
+      console.log(`  After merge: parts:`, parts);
     }
     const type = opcode as InstructionType;
     
     // Handle different instruction formats
     let dest, src1, src2, immediate;
     
-    if (type.startsWith('L') || type.startsWith('S')) {
+    const isLoadStore = (type.startsWith('L') || type.startsWith('S')) && 
+                        !type.includes('SUB') && !type.includes('ADD');
+    
+    if (isLoadStore) {
       // Load/Store: L.D F0, 32(R2) -> dest=F0, immediate=32, src1=R2
+      // Match: L.D, LD, S.D, SD, SW, S.S, but NOT SUB.D, ADD.D, etc.
       // After potential opcode merge, format is: [OPCODE, DEST, IMM, BASE]
       dest = parts[1];
       immediate = parseFloat(parts[2]) || 0;
@@ -559,30 +566,36 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     // Get source operands
     const allRegs = [...state.registers.float, ...state.registers.int];
     
+    console.log(`    Operands: src1=${nextInst.src1}, src2=${nextInst.src2}, dest=${nextInst.dest}`);
+    
     if (nextInst.src1) {
       const src1Reg = allRegs.find(r => r.name === nextInst.src1);
+      console.log(`    src1Reg found: ${src1Reg ? `${src1Reg.name}=${src1Reg.value}, qi=${src1Reg.qi}` : 'NOT FOUND'}`);
       if (src1Reg) {
         if (src1Reg.qi === null) {
           rs.vj = src1Reg.value;
           rs.qj = null;
+          console.log(`    Set Vj=${rs.vj}, Qj=${rs.qj}`);
         } else {
           rs.vj = null;
           rs.qj = src1Reg.qi;
-          console.log(`    RAW hazard: waiting for ${src1Reg.qi}`);
+          console.log(`    RAW hazard: waiting for ${src1Reg.qi}, set Vj=${rs.vj}, Qj=${rs.qj}`);
         }
       }
     }
     
     if (nextInst.src2) {
       const src2Reg = allRegs.find(r => r.name === nextInst.src2);
+      console.log(`    src2Reg found: ${src2Reg ? `${src2Reg.name}=${src2Reg.value}, qi=${src2Reg.qi}` : 'NOT FOUND'}`);
       if (src2Reg) {
         if (src2Reg.qi === null) {
           rs.vk = src2Reg.value;
           rs.qk = null;
+          console.log(`    Set Vk=${rs.vk}, Qk=${rs.qk}`);
         } else {
           rs.vk = null;
           rs.qk = src2Reg.qi;
-          console.log(`    RAW hazard: waiting for ${src2Reg.qi}`);
+          console.log(`    RAW hazard: waiting for ${src2Reg.qi}, set Vk=${rs.vk}, Qk=${rs.qk}`);
         }
       }
     }
