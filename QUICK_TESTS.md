@@ -115,13 +115,19 @@ Cache:
 - Hit Latency: 1
 - Miss Latency: 50
 
-Initial Memory (format: addr:value, addr:value):
-0:10.5, 8:20.5, 16:30.5, 24:40.5
+Initial State Setup:
+After loading the program, edit directly in the tables!
 
-Initial Registers:
-Edit directly in register tables after loading program!
-- Integer registers: No decimal points allowed
-- Float registers: Decimals allowed (e.g., 1.5, 3.14)
+**Memory Table:**
+- Click "Add" button to add new memory entries
+- Enter address (integer) and value (decimal allowed)
+- Edit existing values by clicking on them
+- Delete entries with trash icon
+
+**Register Tables:**
+- Click on any register value to edit
+- Integer registers (R0-R31): No decimal points allowed
+- Float registers (F0-F31): Decimals allowed (e.g., 1.5, 3.14)
 ```
 
 ---
@@ -171,16 +177,19 @@ If something seems wrong:
 ## Step-by-Step Test Procedure
 
 1. **Configure** cache and latency settings in the config panel
-2. **Set initial memory** values (e.g., `0:10.5, 8:20.5`)
-3. **Paste test code** into instruction input
-4. **Click "Load Program"**
-5. **Edit register values** directly in the register tables (before stepping!)
-   - Click on any value cell in Integer or Floating Point register tables
-   - Integer registers: Only whole numbers (no decimals)
-   - Float registers: Decimals allowed (e.g., 1.5, 3.14)
-6. **Open Console** (F12 in browser) to see detailed logs
-7. **Step through** cycle by cycle or run all
-8. **Observe** stage changes in tables (registers become read-only after first step)
-9. **Verify** final register and memory values
+2. **Paste test code** into instruction input
+3. **Click "Load Program"**
+4. **Edit initial state** (before stepping!):
+   - **Memory Table**: Add, edit, or delete memory entries
+     - Click "Add" to create new memory locations
+     - Edit values directly in the table
+     - Delete entries with the trash icon
+   - **Register Tables**: Click on any value cell to edit
+     - Integer registers: Only whole numbers (no decimals)
+     - Float registers: Decimals allowed (e.g., 1.5, 3.14)
+5. **Open Console** (F12 in browser) to see detailed logs
+6. **Step through** cycle by cycle or run all
+7. **Observe** stage changes in tables
+8. **Verify** final register and memory values
 
-**Note:** Register values are editable ONLY at cycle 0 (before execution). Once you step or run, they become read-only.
+**Note:** Memory and registers are editable ONLY at cycle 0 (before execution). Once you step or run, they become read-only.

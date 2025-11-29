@@ -55,7 +55,12 @@ export const LoadStoreBufferTable = ({ title, buffers }: LoadStoreBufferTablePro
                     {getStageDisplay(buffer)}
                   </TableCell>
                   <TableCell className="text-xs text-center font-mono">
-                    {buffer.address !== null ? `0x${buffer.address.toString(16).toUpperCase()}` : "-"}
+                    {buffer.address !== null ? (
+                      <>
+                        0x{buffer.address.toString(16).toUpperCase()}
+                        <span className="text-muted-foreground ml-1">({buffer.address})</span>
+                      </>
+                    ) : "-"}
                   </TableCell>
                   <TableCell className="text-xs text-center font-mono">
                     {buffer.value !== null ? buffer.value.toFixed(2) : "-"}

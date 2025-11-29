@@ -8,6 +8,7 @@ import { InstructionStatusTable } from "@/components/simulator/InstructionStatus
 import { ReservationStationTable } from "@/components/simulator/ReservationStationTable";
 import { RegisterFileTable } from "@/components/simulator/RegisterFileTable";
 import { LoadStoreBufferTable } from "@/components/simulator/LoadStoreBufferTable";
+import { MemoryTable } from "@/components/simulator/MemoryTable";
 import { parseInstructions, initializeSimulatorState, executeSimulationStep } from "@/lib/tomasuloEngine";
 import { useToast } from "@/hooks/use-toast";
 
@@ -31,10 +32,6 @@ const defaultConfig: SimulatorConfig = {
     hitLatency: 1,
     missLatency: 10,
   },
-  initialMemory: [
-    { address: 0, value: 10 },
-    { address: 8, value: 20 },
-  ],
 };
 
 const Index = () => {
@@ -112,6 +109,30 @@ const Index = () => {
       floatReg.value = newValue;
     }
     
+    setState(newState);
+  };
+
+  const handleMemoryValueChange = (address: number, newValue: number) => {
+    if (!state || state.cycle > 0) return;
+    
+    const newState = { ...state };
+    newState.memory.set(address, newValue);
+    setState(newState);
+  };
+
+  const handleMemoryDelete = (address: number) => {
+    if (!state || state.cycle > 0) return;
+    
+    const newState = { ...state };
+    newState.memory.delete(address);
+    setState(newState);
+  };
+
+  const handleMemoryAdd = (address: number, value: number) => {
+    if (!state || state.cycle > 0) return;
+    
+    const newState = { ...state };
+    newState.memory.set(address, value);
     setState(newState);
   };
 
@@ -232,6 +253,14 @@ const Index = () => {
                     onValueChange={handleRegisterValueChange}
                   />
                 </div>
+
+                <MemoryTable
+                  memory={state.memory}
+                  isEditable={state.cycle === 0}
+                  onMemoryChange={handleMemoryValueChange}
+                  onMemoryDelete={handleMemoryDelete}
+                  onMemoryAdd={handleMemoryAdd}
+                />
               </>
             ) : (
               <div className="flex items-center justify-center py-32 border border-border border-dashed rounded-lg bg-card/50">
