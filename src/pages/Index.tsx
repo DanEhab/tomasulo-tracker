@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Cpu } from "lucide-react";
 import { SimulatorConfig, SimulatorState } from "@/types/simulator";
 import { ConfigPanel } from "@/components/simulator/ConfigPanel";
@@ -75,8 +75,14 @@ const Index = () => {
 
   const handleRunAll = () => {
     if (!state) return;
-    // Toggle running state
-    setState({ ...state, isRunning: !state.isRunning });
+    
+    if (state.isRunning) {
+      // Stop running
+      setState({ ...state, isRunning: false });
+    } else {
+      // Start running
+      setState({ ...state, isRunning: true });
+    }
   };
 
   const handleReset = () => {
@@ -86,6 +92,22 @@ const Index = () => {
       description: "All state has been cleared.",
     });
   };
+
+  // Auto-run effect
+  useEffect(() => {
+    if (!state?.isRunning || state?.isComplete) return;
+    
+    const interval = setInterval(() => {
+      setState(currentState => {
+        if (!currentState || currentState.isComplete || !currentState.isRunning) {
+          return currentState;
+        }
+        return executeSimulationStep(currentState, config);
+      });
+    }, 500); // 500ms per cycle
+    
+    return () => clearInterval(interval);
+  }, [state?.isRunning, state?.isComplete, config]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
