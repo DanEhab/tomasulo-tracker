@@ -13,13 +13,20 @@ export function parseInstructions(code: string): Instruction[] {
   return lines.map((line, index) => {
     const cleaned = line.trim().replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ');
     const parts = cleaned.split(/\s+/).filter(p => p);
-    const type = parts[0].toUpperCase() as InstructionType;
+    // Handle split opcode tokens like "L. D" or "ADD. D" by merging
+    let opcode = parts[0].toUpperCase();
+    if (opcode.endsWith('.') && parts.length > 1 && parts[1].length === 1) {
+      opcode = (opcode + parts[1].toUpperCase());
+      parts.splice(1, 1); // remove the next token as it's merged into opcode
+    }
+    const type = opcode as InstructionType;
     
     // Handle different instruction formats
     let dest, src1, src2, immediate;
     
     if (type.startsWith('L') || type.startsWith('S')) {
       // Load/Store: L.D F0, 32(R2) -> dest=F0, immediate=32, src1=R2
+      // After potential opcode merge, format is: [OPCODE, DEST, IMM, BASE]
       dest = parts[1];
       immediate = parseFloat(parts[2]) || 0;
       src1 = parts[3];
@@ -34,7 +41,7 @@ export function parseInstructions(code: string): Instruction[] {
       src2 = parts[2];
       dest = parts[3]; // label
     } else {
-      // Regular: ADD.D F0, F2, F4 -> dest=F0, src1=F2, src2=F4
+      // Regular FP ops: ADD.D F0, F2, F4 -> dest=F0, src1=F2, src2=F4
       dest = parts[1];
       src1 = parts[2];
       src2 = parts[3];
@@ -110,7 +117,7 @@ export function initializeSimulatorState(
     type: 'FLOAT' as const,
   }));
 
-  return {
+  const baseState: SimulatorState = {
     cycle: 0,
     instructions,
     reservationStations: {
@@ -130,6 +137,26 @@ export function initializeSimulatorState(
     isRunning: false,
     isComplete: false,
   };
+
+  // Apply optional initial registers
+  if (config.initialRegisters) {
+    Object.entries(config.initialRegisters).forEach(([name, value]) => {
+      const reg = [...baseState.registers.int, ...baseState.registers.float]
+        .find(r => r.name.toUpperCase() === name.toUpperCase());
+      if (reg) {
+        reg.value = value;
+      }
+    });
+  }
+
+  // Apply optional initial memory
+  if (config.initialMemory) {
+    config.initialMemory.forEach(({ address, value }) => {
+      baseState.memory.set(address, value);
+    });
+  }
+
+  return baseState;
 }
 
 export function executeSimulationStep(
@@ -274,6 +301,18 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
   // Execute in load buffers
   state.loadStoreBuffers.load.forEach(buf => {
     if (buf.busy && buf.timeRemaining > 0) {
+      // Set exec start/end on the corresponding load instruction for UI visibility
+      const inst = state.instructions.find(i => {
+        // A load's destination register should have been renamed to the buffer tag
+        const destReg = [...state.registers.float, ...state.registers.int]
+          .find(r => r.name === i.dest);
+        return i.issueCycle !== undefined && i.execStartCycle === undefined && destReg && destReg.qi === buf.tag;
+      });
+      if (inst && inst.execStartCycle === undefined) {
+        inst.execStartCycle = state.cycle;
+        inst.execEndCycle = state.cycle + (buf.timeRemaining - 1);
+      }
+
       buf.timeRemaining--;
       console.log(`  ${buf.tag} executing: ${buf.timeRemaining} cycles remaining`);
       
@@ -294,6 +333,14 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         // Store completes - write to memory
         state.memory.set(buf.address, buf.value);
         buf.busy = false;
+        // Mark the corresponding instruction as completed (stores don't broadcast)
+        if (buf.instructionId !== undefined) {
+          const inst = state.instructions.find(i => i.id === buf.instructionId);
+          if (inst && inst.writeResultCycle === undefined) {
+            inst.execEndCycle = state.cycle;
+            inst.writeResultCycle = state.cycle; // treat completion as write-back for UI
+          }
+        }
       }
     }
   });
@@ -358,6 +405,14 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
           buf.value = null; // Wait for CDB
         }
       }
+    } else if (type.startsWith('L')) {
+      // Load: register renaming for destination so CDB updates correctly
+      const destReg = [...state.registers.float, ...state.registers.int]
+        .find(r => r.name === nextInst.dest);
+      if (destReg) {
+        destReg.qi = buf.tag;
+        console.log(`    Register ${destReg.name} renamed to ${buf.tag}`);
+      }
     }
   } else {
     const rs = freeStation as ReservationStation;
@@ -417,9 +472,11 @@ export function getInstructionLatency(type: InstructionType, config: SimulatorCo
   if (type.includes('DIV')) {
     return config.latencies.DIV;
   }
-  if (type.startsWith('L') || type.includes('.D') || type.includes('.S')) {
+  // Only treat explicit load mnemonics as LOAD latency
+  if (type.startsWith('L')) {
     return config.latencies.LOAD;
   }
+  // Stores use STORE latency
   if (type.startsWith('S')) {
     return config.latencies.STORE;
   }

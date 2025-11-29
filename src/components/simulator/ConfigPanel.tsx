@@ -30,6 +30,33 @@ export const ConfigPanel = ({ config, onConfigChange }: ConfigPanelProps) => {
     });
   };
 
+  const updateInitialR2 = (value: number) => {
+    onConfigChange({
+      ...config,
+      initialRegisters: { ...(config.initialRegisters || {}), R2: value }
+    });
+  };
+
+  const updateInitialMemory = (text: string) => {
+    // Expect CSV pairs: "addr:value, addr:value"
+    const entries = text
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => s.length)
+      .map(pair => {
+        const [a, v] = pair.split(':').map(x => x.trim());
+        const address = parseInt(a);
+        const value = parseFloat(v);
+        return isNaN(address) || isNaN(value) ? null : { address, value };
+      })
+      .filter((x): x is { address: number; value: number } => x !== null);
+
+    onConfigChange({
+      ...config,
+      initialMemory: entries
+    });
+  };
+
   return (
     <div className="space-y-4">
       <Card className="bg-card border-border">
@@ -168,6 +195,33 @@ export const ConfigPanel = ({ config, onConfigChange }: ConfigPanelProps) => {
               value={config.cache.missLatency}
               onChange={(e) => updateCache('missLatency', parseInt(e.target.value))}
               className="w-16 h-7 text-xs bg-input border-border"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-card border-border">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold text-primary">Initial State</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs text-muted-foreground">R2 (Base)</Label>
+            <Input
+              type="number"
+              value={config.initialRegisters?.R2 ?? 0}
+              onChange={(e) => updateInitialR2(parseInt(e.target.value))}
+              className="w-24 h-7 text-xs bg-input border-border"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Prefill Memory (addr:value)</Label>
+            <Input
+              type="text"
+              value={(config.initialMemory || []).map(m => `${m.address}:${m.value}`).join(', ')}
+              onChange={(e) => updateInitialMemory(e.target.value)}
+              placeholder="0:10, 8:20"
+              className="h-7 text-xs bg-input border-border"
             />
           </div>
         </CardContent>

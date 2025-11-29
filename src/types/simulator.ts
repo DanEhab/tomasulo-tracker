@@ -49,6 +49,7 @@ export interface LoadStoreBuffer {
   address: number | null;
   value: number | null;
   timeRemaining: number;
+  instructionId?: number; // Track which instruction occupies this buffer
 }
 
 export interface CacheBlock {
@@ -77,6 +78,11 @@ export interface SimulatorConfig {
     hitLatency: number;
     missLatency: number;
   };
+  // Optional initial state to avoid zero-only runs
+  initialRegisters?: {
+    [name: string]: number; // e.g., { R2: 16, F0: 1 }
+  };
+  initialMemory?: Array<{ address: number; value: number }>; // e.g., [{address:0,value:10},{address:8,value:20}]
 }
 
 export interface SimulatorState {

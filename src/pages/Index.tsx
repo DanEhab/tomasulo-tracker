@@ -31,6 +31,12 @@ const defaultConfig: SimulatorConfig = {
     hitLatency: 1,
     missLatency: 10,
   },
+  // Prefill to make the default example meaningful
+  initialRegisters: { R2: 0 },
+  initialMemory: [
+    { address: 0, value: 10 },
+    { address: 8, value: 20 },
+  ],
 };
 
 const Index = () => {
