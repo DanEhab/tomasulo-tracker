@@ -93,6 +93,9 @@ export function initializeSimulatorState(
     address: null,
     value: null,
     timeRemaining: 0,
+    baseRegisterTag: null,
+    storeValueTag: null,
+    stage: 'ADDRESS_CALC' as const,
   }));
 
   const storeBuffers: LoadStoreBuffer[] = Array.from({ length: config.reservationStations.storeBuffers }, (_, i) => ({
@@ -101,6 +104,9 @@ export function initializeSimulatorState(
     address: null,
     value: null,
     timeRemaining: 0,
+    baseRegisterTag: null,
+    storeValueTag: null,
+    stage: 'ADDRESS_CALC' as const,
   }));
 
   const intRegisters = Array.from({ length: 32 }, (_, i) => ({
@@ -163,7 +169,13 @@ export function executeSimulationStep(
   state: SimulatorState,
   config: SimulatorConfig
 ): SimulatorState {
-  const newState = JSON.parse(JSON.stringify(state)); // Deep clone
+  // Deep clone with proper Map handling
+  const newState = JSON.parse(JSON.stringify(state));
+  
+  // Restore Map objects (JSON.stringify converts Maps to empty objects)
+  newState.memory = new Map(state.memory);
+  newState.cache = new Map(state.cache);
+  
   newState.cycle = state.cycle + 1;
   
   console.log(`\n=== CYCLE ${newState.cycle} ===`);
@@ -204,9 +216,9 @@ function writeResultPhase(state: SimulatorState): void {
     rs => rs.busy && rs.timeRemaining === 0
   );
   
-  // Also check load buffers
+  // Also check load buffers that completed
   const finishedLoads = state.loadStoreBuffers.load.filter(
-    buf => buf.busy && buf.timeRemaining === 0
+    buf => buf.busy && buf.stage === 'COMPLETED'
   );
   
   // CDB can only broadcast one result per cycle (first come first serve)
@@ -223,7 +235,7 @@ function writeResultPhase(state: SimulatorState): void {
     // Update instruction status
     const inst = state.instructions.find(i => 
       i.issueCycle !== undefined && i.writeResultCycle === undefined &&
-      (i.dest === tag || state.registers.float.find(r => r.name === i.dest && r.qi === tag) ||
+      (state.registers.float.find(r => r.name === i.dest && r.qi === tag) ||
        state.registers.int.find(r => r.name === i.dest && r.qi === tag))
     );
     if (inst) {
@@ -252,15 +264,23 @@ function writeResultPhase(state: SimulatorState): void {
       }
     });
     
-    // Update store buffers waiting for value
-    state.loadStoreBuffers.store.forEach(buf => {
-      if (buf.busy && buf.value === null) {
-        const srcReg = state.instructions.find(i => 
-          buf.tag.includes('Store') && i.dest && 
-          [...state.registers.float, ...state.registers.int].find(r => r.qi === tag)
-        );
-        if (srcReg) {
+    // Update load/store buffers waiting for base register or store value
+    [...state.loadStoreBuffers.load, ...state.loadStoreBuffers.store].forEach(buf => {
+      if (buf.busy) {
+        // Update base register dependency
+        if (buf.baseRegisterTag === tag) {
+          const inst = state.instructions.find(i => i.id === buf.instructionId);
+          const offset = inst?.immediate || 0;
+          buf.address = (value || 0) + offset;
+          buf.baseRegisterTag = null;
+          console.log(`  ${buf.tag} base register resolved, address: ${buf.address}`);
+        }
+        
+        // Update store value dependency
+        if (buf.storeValueTag === tag) {
           buf.value = value || 0;
+          buf.storeValueTag = null;
+          console.log(`  ${buf.tag} store value resolved: ${buf.value}`);
         }
       }
     });
@@ -268,6 +288,9 @@ function writeResultPhase(state: SimulatorState): void {
     // Free the broadcasting unit
     broadcasting.busy = false;
     broadcasting.timeRemaining = 0;
+    if ('stage' in broadcasting) {
+      broadcasting.stage = 'ADDRESS_CALC';
+    }
   }
 }
 
@@ -298,49 +321,137 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
     }
   });
   
-  // Execute in load buffers
+  // Execute LOAD buffers with proper stages
   state.loadStoreBuffers.load.forEach(buf => {
-    if (buf.busy && buf.timeRemaining > 0) {
-      // Set exec start/end on the corresponding load instruction for UI visibility
-      const inst = state.instructions.find(i => {
-        // A load's destination register should have been renamed to the buffer tag
-        const destReg = [...state.registers.float, ...state.registers.int]
-          .find(r => r.name === i.dest);
-        return i.issueCycle !== undefined && i.execStartCycle === undefined && destReg && destReg.qi === buf.tag;
-      });
-      if (inst && inst.execStartCycle === undefined) {
-        inst.execStartCycle = state.cycle;
-        inst.execEndCycle = state.cycle + (buf.timeRemaining - 1);
+    if (!buf.busy) return;
+    
+    const inst = state.instructions.find(i => i.id === buf.instructionId);
+    
+    // STAGE 1: Address Calculation
+    if (buf.stage === 'ADDRESS_CALC') {
+      // Wait for base register if needed
+      if (buf.baseRegisterTag !== null) {
+        console.log(`  ${buf.tag} waiting for base register from ${buf.baseRegisterTag}`);
+        return;
       }
-
+      
+      // Address is ready, move to memory access
+      if (buf.address !== null) {
+        console.log(`  ${buf.tag} address calculated: ${buf.address}`);
+        
+        // Check for memory conflicts with older stores
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true)) {
+          console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
+          return;
+        }
+        
+        // Start cache access
+        const { latency, hit } = accessCache(buf.address, config, state, getLoadSize(inst?.type));
+        buf.timeRemaining = latency;
+        buf.stage = 'MEMORY_ACCESS';
+        
+        if (inst && inst.execStartCycle === undefined) {
+          inst.execStartCycle = state.cycle;
+        }
+        
+        console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
+      }
+    }
+    
+    // STAGE 2: Memory Access
+    if (buf.stage === 'MEMORY_ACCESS' && buf.timeRemaining > 0) {
       buf.timeRemaining--;
-      console.log(`  ${buf.tag} executing: ${buf.timeRemaining} cycles remaining`);
+      console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
       
       if (buf.timeRemaining === 0 && buf.address !== null) {
         // Load completes - fetch from memory
         buf.value = state.memory.get(buf.address) || 0;
+        buf.stage = 'COMPLETED';
+        
+        if (inst) {
+          inst.execEndCycle = state.cycle;
+        }
+        
+        console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address}`);
       }
     }
   });
   
-  // Execute in store buffers
+  // Execute STORE buffers with proper stages
   state.loadStoreBuffers.store.forEach(buf => {
-    if (buf.busy && buf.value !== null && buf.address !== null && buf.timeRemaining > 0) {
-      buf.timeRemaining--;
-      console.log(`  ${buf.tag} executing: ${buf.timeRemaining} cycles remaining`);
+    if (!buf.busy) return;
+    
+    const inst = state.instructions.find(i => i.id === buf.instructionId);
+    
+    // STAGE 1: Address Calculation
+    if (buf.stage === 'ADDRESS_CALC') {
+      // Wait for base register if needed
+      if (buf.baseRegisterTag !== null) {
+        console.log(`  ${buf.tag} waiting for base register from ${buf.baseRegisterTag}`);
+        return;
+      }
       
-      if (buf.timeRemaining === 0) {
-        // Store completes - write to memory
-        state.memory.set(buf.address, buf.value);
-        buf.busy = false;
-        // Mark the corresponding instruction as completed (stores don't broadcast)
-        if (buf.instructionId !== undefined) {
-          const inst = state.instructions.find(i => i.id === buf.instructionId);
-          if (inst && inst.writeResultCycle === undefined) {
-            inst.execEndCycle = state.cycle;
-            inst.writeResultCycle = state.cycle; // treat completion as write-back for UI
-          }
+      // Wait for store value if needed
+      if (buf.storeValueTag !== null) {
+        console.log(`  ${buf.tag} waiting for store value from ${buf.storeValueTag}`);
+        return;
+      }
+      
+      // Address and value are ready, move to memory access
+      if (buf.address !== null && buf.value !== null) {
+        console.log(`  ${buf.tag} address calculated: ${buf.address}, value: ${buf.value}`);
+        
+        // Check for memory conflicts with older loads/stores
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.load, state.instructions, false)) {
+          console.log(`  ${buf.tag} blocked by memory conflict (WAR/WAW hazard)`);
+          return;
         }
+        
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, false)) {
+          console.log(`  ${buf.tag} blocked by memory conflict (WAW hazard)`);
+          return;
+        }
+        
+        // Start cache access
+        const { latency, hit } = accessCache(buf.address, config, state, getStoreSize(inst?.type));
+        buf.timeRemaining = latency;
+        buf.stage = 'MEMORY_ACCESS';
+        
+        if (inst && inst.execStartCycle === undefined) {
+          inst.execStartCycle = state.cycle;
+        }
+        
+        console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
+      }
+    }
+    
+    // STAGE 2: Memory Access
+    if (buf.stage === 'MEMORY_ACCESS' && buf.timeRemaining > 0) {
+      buf.timeRemaining--;
+      console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
+      
+      if (buf.timeRemaining === 0 && buf.address !== null && buf.value !== null) {
+        // Store completes - write to memory and cache
+        state.memory.set(buf.address, buf.value);
+        
+        // Update cache with new value
+        const blockSize = config.cache.blockSize;
+        const blockIndex = Math.floor(buf.address / blockSize);
+        const cacheBlock = state.cache.get(blockIndex);
+        if (cacheBlock && cacheBlock.valid) {
+          const offsetInBlock = buf.address % blockSize;
+          cacheBlock.data[offsetInBlock] = buf.value;
+        }
+        
+        buf.stage = 'COMPLETED';
+        buf.busy = false;
+        
+        if (inst) {
+          inst.execEndCycle = state.cycle;
+          inst.writeResultCycle = state.cycle; // Stores complete without CDB
+        }
+        
+        console.log(`  ${buf.tag} stored value ${buf.value} to address ${buf.address}`);
       }
     }
   });
@@ -365,7 +476,7 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     targetStations = state.reservationStations.add;
   } else if (type.includes('MUL') || type.includes('DIV')) {
     targetStations = state.reservationStations.mul;
-  } else if (type.startsWith('L') || type.includes('.D') && type.startsWith('L')) {
+  } else if (type.startsWith('L') || (type.includes('.') && type.startsWith('L'))) {
     targetStations = state.loadStoreBuffers.load;
     isLoadStore = true;
   } else if (type.startsWith('S')) {
@@ -387,28 +498,49 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   
   if (isLoadStore) {
     const buf = freeStation as LoadStoreBuffer;
-    // Calculate address
-    const baseReg = [...state.registers.int, ...state.registers.float]
-      .find(r => r.name === nextInst.src1);
+    buf.instructionId = nextInst.id;
+    buf.stage = 'ADDRESS_CALC';
+    buf.timeRemaining = 0;
+    buf.value = null;
+    buf.address = null;
+    buf.baseRegisterTag = null;
+    buf.storeValueTag = null;
+    
+    // Get base register for address calculation
+    const allRegs = [...state.registers.int, ...state.registers.float];
+    const baseReg = allRegs.find(r => r.name === nextInst.src1);
     const offset = nextInst.immediate || 0;
-    buf.address = (baseReg?.value || 0) + offset;
-    buf.timeRemaining = getInstructionLatency(type, config);
+    
+    if (baseReg) {
+      if (baseReg.qi === null) {
+        // Base register ready, calculate address immediately
+        buf.address = baseReg.value + offset;
+        console.log(`    Address calculated: ${baseReg.name}(${baseReg.value}) + ${offset} = ${buf.address}`);
+      } else {
+        // Base register not ready, wait for it
+        buf.baseRegisterTag = baseReg.qi;
+        console.log(`    Waiting for base register ${baseReg.name} from ${baseReg.qi}`);
+      }
+    } else {
+      // No base register (should not happen in valid code)
+      buf.address = offset;
+    }
     
     if (type.startsWith('S')) {
-      // Store: need to get value from source register
-      const srcReg = [...state.registers.float, ...state.registers.int]
-        .find(r => r.name === nextInst.dest);
+      // STORE: need to get value from source register (dest field contains the source)
+      const srcReg = allRegs.find(r => r.name === nextInst.dest);
       if (srcReg) {
         if (srcReg.qi === null) {
           buf.value = srcReg.value;
+          console.log(`    Store value ready: ${srcReg.name} = ${buf.value}`);
         } else {
-          buf.value = null; // Wait for CDB
+          buf.storeValueTag = srcReg.qi;
+          console.log(`    Waiting for store value ${srcReg.name} from ${srcReg.qi}`);
         }
       }
     } else if (type.startsWith('L')) {
-      // Load: register renaming for destination so CDB updates correctly
-      const destReg = [...state.registers.float, ...state.registers.int]
-        .find(r => r.name === nextInst.dest);
+      // LOAD: register renaming for destination
+      const destReg = allRegs.find(r => r.name === nextInst.dest);
       if (destReg) {
         destReg.qi = buf.tag;
         console.log(`    Register ${destReg.name} renamed to ${buf.tag}`);
@@ -460,6 +592,125 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
       }
     }
   }
+}
+
+/**
+ * Check for memory conflicts (RAW, WAR, WAW) between memory operations
+ * @param currentBuf - The current buffer checking for conflicts
+ * @param otherBuffers - Other buffers to check against
+ * @param instructions - All instructions for ordering
+ * @param isLoad - True if checking for a LOAD, false for STORE
+ * @returns True if there's a conflict (should block), false otherwise
+ */
+function checkMemoryConflicts(
+  currentBuf: LoadStoreBuffer,
+  otherBuffers: LoadStoreBuffer[],
+  instructions: Instruction[],
+  isLoad: boolean
+): boolean {
+  const currentInst = instructions.find(i => i.id === currentBuf.instructionId);
+  if (!currentInst || currentBuf.address === null) return false;
+  
+  for (const otherBuf of otherBuffers) {
+    if (!otherBuf.busy || otherBuf.address === null) continue;
+    if (otherBuf.tag === currentBuf.tag) continue;
+    
+    const otherInst = instructions.find(i => i.id === otherBuf.instructionId);
+    if (!otherInst) continue;
+    
+    // Check if addresses conflict (same block)
+    if (currentBuf.address !== otherBuf.address) continue;
+    
+    // Check program order: only block if the other instruction is older
+    const isOlder = otherInst.id < currentInst.id;
+    if (!isOlder) continue;
+    
+    // Check if the other instruction is still in progress
+    const otherComplete = otherBuf.stage === 'COMPLETED' || !otherBuf.busy;
+    if (otherComplete) continue;
+    
+    // Conflict found
+    if (isLoad) {
+      // LOAD blocked by older STORE with same address (RAW hazard)
+      console.log(`    RAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address}`);
+    } else {
+      // STORE blocked by older LOAD or STORE (WAR/WAW hazard)
+      console.log(`    WAR/WAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address}`);
+    }
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Simulate cache access and return latency
+ * @param address - Memory address to access
+ * @param config - Simulator configuration
+ * @param state - Current simulator state
+ * @param accessSize - Size in bytes (4 for word, 8 for double)
+ * @returns Object with latency and hit/miss status
+ */
+function accessCache(
+  address: number,
+  config: SimulatorConfig,
+  state: SimulatorState,
+  accessSize: number
+): { latency: number; hit: boolean } {
+  const blockSize = config.cache.blockSize;
+  const blockIndex = Math.floor(address / blockSize);
+  const blockTag = blockIndex;
+  
+  // Check if block is in cache
+  const cacheBlock = state.cache.get(blockIndex);
+  
+  if (cacheBlock && cacheBlock.valid && cacheBlock.tag === blockTag) {
+    // Cache hit
+    console.log(`    Cache HIT at address ${address} (block ${blockIndex})`);
+    return { latency: config.cache.hitLatency, hit: true };
+  } else {
+    // Cache miss - need to fetch block from memory
+    console.log(`    Cache MISS at address ${address} (block ${blockIndex})`);
+    
+    // Allocate/update cache block
+    const blockStartAddr = blockIndex * blockSize;
+    const blockData: number[] = [];
+    for (let i = 0; i < blockSize; i++) {
+      blockData.push(state.memory.get(blockStartAddr + i) || 0);
+    }
+    
+    state.cache.set(blockIndex, {
+      tag: blockTag,
+      data: blockData,
+      valid: true
+    });
+    
+    return { latency: config.cache.missLatency + config.cache.hitLatency, hit: false };
+  }
+}
+
+/**
+ * Get the size in bytes for a LOAD instruction
+ */
+function getLoadSize(type?: InstructionType): number {
+  if (!type) return 4;
+  
+  // LW, L.S = 4 bytes (word/single-precision float)
+  // LD, L.D = 8 bytes (double word/double-precision float)
+  if (type === 'LD' || type === 'L.D') return 8;
+  return 4;
+}
+
+/**
+ * Get the size in bytes for a STORE instruction
+ */
+function getStoreSize(type?: InstructionType): number {
+  if (!type) return 4;
+  
+  // SW, S.S = 4 bytes (word/single-precision float)
+  // SD, S.D = 8 bytes (double word/double-precision float)
+  if (type === 'SD' || type === 'S.D') return 8;
+  return 4;
 }
 
 export function getInstructionLatency(type: InstructionType, config: SimulatorConfig): number {

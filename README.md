@@ -1,4 +1,33 @@
-# Welcome to your Lovable project
+# Tomasulo Algorithm Simulator
+
+A visual simulator for the Tomasulo algorithm with comprehensive Load/Store support, cache simulation, and memory conflict detection.
+
+## 📚 Documentation
+
+- **[Quick Test Examples](./QUICK_TESTS.md)** - Ready-to-use test cases (⭐ start here!)
+- **[Execution Flow Diagrams](./EXECUTION_FLOW.md)** - Visual diagrams showing how Load/Store executes
+- **[Load/Store Testing Guide](./LOAD_STORE_TESTING.md)** - Comprehensive testing guide with detailed explanations
+- **[Implementation Summary](./IMPLEMENTATION_SUMMARY.md)** - Technical details of the Load/Store implementation
+
+## 🚀 Quick Start
+
+```bash
+npm install
+npm run dev
+```
+
+Open http://localhost:8081 and start simulating!
+
+## ✨ Features
+
+- ✅ Full Tomasulo algorithm with reservation stations
+- ✅ Separate Load and Store buffers with proper conflict detection
+- ✅ Cache simulation with configurable hit/miss latencies
+- ✅ RAW, WAR, and WAW hazard detection for memory operations
+- ✅ Visual execution tracking with color-coded stages
+- ✅ Cycle-by-cycle stepping through execution
+- ✅ Common Data Bus (CDB) simulation
+- ✅ Register renaming and dynamic scheduling
 
 ## Project info
 
