@@ -57,6 +57,23 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        status: {
+          ready: "hsl(var(--status-ready))",
+          executing: "hsl(var(--status-executing))",
+          stalled: "hsl(var(--status-stalled))",
+          miss: "hsl(var(--status-miss))",
+          completed: "hsl(var(--status-completed))",
+        },
+        code: {
+          bg: "hsl(var(--code-bg))",
+          comment: "hsl(var(--code-comment))",
+          keyword: "hsl(var(--code-keyword))",
+          number: "hsl(var(--code-number))",
+          string: "hsl(var(--code-string))",
+        },
+      },
+      fontFamily: {
+        mono: ["'JetBrains Mono'", "'Fira Code'", "'Consolas'", "monospace"],
       },
       borderRadius: {
         lg: "var(--radius)",
