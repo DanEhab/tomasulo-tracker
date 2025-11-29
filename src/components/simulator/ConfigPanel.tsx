@@ -30,13 +30,6 @@ export const ConfigPanel = ({ config, onConfigChange }: ConfigPanelProps) => {
     });
   };
 
-  const updateInitialR2 = (value: number) => {
-    onConfigChange({
-      ...config,
-      initialRegisters: { ...(config.initialRegisters || {}), R2: value }
-    });
-  };
-
   const updateInitialMemory = (text: string) => {
     // Expect CSV pairs: "addr:value, addr:value"
     const entries = text
@@ -202,28 +195,25 @@ export const ConfigPanel = ({ config, onConfigChange }: ConfigPanelProps) => {
 
       <Card className="bg-card border-border">
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold text-primary">Initial State</CardTitle>
+          <CardTitle className="text-sm font-semibold text-primary">Initial Memory</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-xs text-muted-foreground">R2 (Base)</Label>
-            <Input
-              type="number"
-              value={config.initialRegisters?.R2 ?? 0}
-              onChange={(e) => updateInitialR2(parseInt(e.target.value))}
-              className="w-24 h-7 text-xs bg-input border-border"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Prefill Memory (addr:value)</Label>
-            <Input
-              type="text"
-              value={(config.initialMemory || []).map(m => `${m.address}:${m.value}`).join(', ')}
-              onChange={(e) => updateInitialMemory(e.target.value)}
-              placeholder="0:10, 8:20"
-              className="h-7 text-xs bg-input border-border"
-            />
-          </div>
+        <CardContent className="space-y-1">
+          <Label className="text-xs text-muted-foreground">
+            Memory Values (addr:value)
+          </Label>
+          <Input
+            type="text"
+            value={(config.initialMemory || []).map(m => `${m.address}:${m.value}`).join(', ')}
+            onChange={(e) => updateInitialMemory(e.target.value)}
+            placeholder="0:10.5, 8:20.5, 16:30.5"
+            className="h-7 text-xs bg-input border-border font-mono"
+          />
+          <p className="text-[10px] text-muted-foreground/70">
+            Example: 0:10, 8:20, 16:30 (address:value pairs)
+          </p>
+          <p className="text-[10px] text-blue-600 dark:text-blue-400 mt-2">
+            💡 Edit register values directly in the register tables after loading the program
+          </p>
         </CardContent>
       </Card>
     </div>

@@ -115,15 +115,13 @@ Cache:
 - Hit Latency: 1
 - Miss Latency: 50
 
-Initial Registers:
-- R1: 0
-- R2: 16
-- F0: 1.0
-- F2: 2.0
-- F4: 4.0
-
 Initial Memory (format: addr:value, addr:value):
 0:10.5, 8:20.5, 16:30.5, 24:40.5
+
+Initial Registers:
+Edit directly in register tables after loading program!
+- Integer registers: No decimal points allowed
+- Float registers: Decimals allowed (e.g., 1.5, 3.14)
 ```
 
 ---
@@ -172,11 +170,17 @@ If something seems wrong:
 
 ## Step-by-Step Test Procedure
 
-1. **Paste test code** into instruction input
-2. **Configure** initial values (registers, memory)
-3. **Click "Initialize"**
-4. **Open Console** (F12 in browser)
-5. **Step through** cycle by cycle
-6. **Observe** stage changes in tables
-7. **Read logs** in console for detailed info
-8. **Verify** final register and memory values
+1. **Configure** cache and latency settings in the config panel
+2. **Set initial memory** values (e.g., `0:10.5, 8:20.5`)
+3. **Paste test code** into instruction input
+4. **Click "Load Program"**
+5. **Edit register values** directly in the register tables (before stepping!)
+   - Click on any value cell in Integer or Floating Point register tables
+   - Integer registers: Only whole numbers (no decimals)
+   - Float registers: Decimals allowed (e.g., 1.5, 3.14)
+6. **Open Console** (F12 in browser) to see detailed logs
+7. **Step through** cycle by cycle or run all
+8. **Observe** stage changes in tables (registers become read-only after first step)
+9. **Verify** final register and memory values
+
+**Note:** Register values are editable ONLY at cycle 0 (before execution). Once you step or run, they become read-only.

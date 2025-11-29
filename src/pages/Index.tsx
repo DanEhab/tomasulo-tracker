@@ -31,8 +31,6 @@ const defaultConfig: SimulatorConfig = {
     hitLatency: 1,
     missLatency: 10,
   },
-  // Prefill to make the default example meaningful
-  initialRegisters: { R2: 0 },
   initialMemory: [
     { address: 0, value: 10 },
     { address: 8, value: 20 },
@@ -97,6 +95,24 @@ const Index = () => {
       title: "Simulator Reset",
       description: "All state has been cleared.",
     });
+  };
+
+  const handleRegisterValueChange = (registerName: string, newValue: number) => {
+    if (!state || state.cycle > 0) return; // Only allow editing before execution starts
+    
+    const newState = { ...state };
+    
+    // Find and update the register in either int or float arrays
+    const intReg = newState.registers.int.find(r => r.name === registerName);
+    const floatReg = newState.registers.float.find(r => r.name === registerName);
+    
+    if (intReg) {
+      intReg.value = Math.floor(newValue); // Integer registers should be whole numbers
+    } else if (floatReg) {
+      floatReg.value = newValue;
+    }
+    
+    setState(newState);
   };
 
   // Auto-run effect
@@ -206,10 +222,14 @@ const Index = () => {
                   <RegisterFileTable 
                     title="Floating Point Registers"
                     registers={state.registers.float}
+                    isEditable={state.cycle === 0}
+                    onValueChange={handleRegisterValueChange}
                   />
                   <RegisterFileTable 
                     title="Integer Registers"
                     registers={state.registers.int}
+                    isEditable={state.cycle === 0}
+                    onValueChange={handleRegisterValueChange}
                   />
                 </div>
               </>
