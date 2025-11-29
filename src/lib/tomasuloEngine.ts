@@ -355,6 +355,8 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         }
         
         console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
+        // Don't decrement in the same cycle we start - return here
+        return;
       }
     }
     
@@ -422,6 +424,8 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         }
         
         console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
+        // Don't decrement in the same cycle we start - return here
+        return;
       }
     }
     
