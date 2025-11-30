@@ -214,25 +214,54 @@ export function executeSimulationStep(
  * Compute the result of an arithmetic operation
  */
 function computeResult(rs: ReservationStation): number {
-  const vj = rs.vj !== null ? rs.vj : 0;
-  const vk = rs.vk !== null ? rs.vk : 0;
+  let vj = rs.vj !== null ? rs.vj : 0;
+  let vk = rs.vk !== null ? rs.vk : 0;
   const op = rs.op;
+  
+  // For single-precision operations, treat operands as 32-bit floats
+  const isSinglePrecision = op.includes('.S');
+  if (isSinglePrecision) {
+    vj = Math.fround(vj);
+    vk = Math.fround(vk);
+  }
   
   console.log(`    Computing: ${op} with Vj=${vj}, Vk=${vk}`);
   
+  let result: number;
+  
   // Floating-point operations
   if (op.includes('ADD')) {
-    return vj + vk;
+    result = vj + vk;
+    // Single-precision: round result to 32-bit float precision
+    if (isSinglePrecision) {
+      result = Math.fround(result);
+    }
+    return result;
   } else if (op.includes('SUB')) {
-    return vj - vk;
+    result = vj - vk;
+    // Single-precision: round result to 32-bit float precision
+    if (isSinglePrecision) {
+      result = Math.fround(result);
+    }
+    return result;
   } else if (op.includes('MUL')) {
-    return vj * vk;
+    result = vj * vk;
+    // Single-precision: round result to 32-bit float precision
+    if (isSinglePrecision) {
+      result = Math.fround(result);
+    }
+    return result;
   } else if (op.includes('DIV')) {
     if (vk === 0) {
       console.warn(`    Division by zero! Returning 0`);
       return 0;
     }
-    return vj / vk;
+    result = vj / vk;
+    // Single-precision: round result to 32-bit float precision
+    if (isSinglePrecision) {
+      result = Math.fround(result);
+    }
+    return result;
   } else if (op === 'DADDI') {
     // Integer add immediate: Vj + immediate (stored in 'a')
     const immediate = rs.a !== null ? rs.a : 0;
