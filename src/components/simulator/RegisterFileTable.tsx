@@ -45,36 +45,43 @@ export const RegisterFileTable = ({ title, registers, isEditable, onValueChange 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {registers.map((reg) => (
-                <TableRow 
-                  key={reg.name} 
-                  className={`border-border ${reg.qi ? "bg-status-stalled/20 text-status-stalled" : ""}`}
-                >
-                  <TableCell className="font-mono text-xs font-semibold">{reg.name}</TableCell>
-                  <TableCell className="text-xs text-center font-mono px-1">
-                    {isEditable ? (
-                      <Input
-                        type="number"
-                        step={isFloatRegister ? "0.1" : "1"}
-                        value={reg.value}
-                        onChange={(e) => handleValueChange(reg.name, e.target.value)}
-                        onKeyDown={(e) => {
-                          // Prevent decimal point for integer registers
-                          if (!isFloatRegister && (e.key === '.' || e.key === ',')) {
-                            e.preventDefault();
-                          }
-                        }}
-                        className="h-6 text-xs text-center font-mono bg-input border-border"
-                      />
-                    ) : (
-                      <span>{isFloatRegister ? reg.value.toFixed(2) : reg.value}</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-center font-mono">
-                    {reg.qi || "-"}
-                  </TableCell>
-                </TableRow>
-              ))}
+              {registers.map((reg) => {
+                const isR0 = reg.name === 'R0';
+                const canEdit = isEditable && !isR0;
+                
+                return (
+                  <TableRow 
+                    key={reg.name} 
+                    className={`border-border ${reg.qi ? "bg-status-stalled/20 text-status-stalled" : ""}`}
+                  >
+                    <TableCell className="font-mono text-xs font-semibold">{reg.name}</TableCell>
+                    <TableCell className="text-xs text-center font-mono px-1">
+                      {canEdit ? (
+                        <Input
+                          type="number"
+                          step={isFloatRegister ? "0.1" : "1"}
+                          value={reg.value}
+                          onChange={(e) => handleValueChange(reg.name, e.target.value)}
+                          onKeyDown={(e) => {
+                            // Prevent decimal point for integer registers
+                            if (!isFloatRegister && (e.key === '.' || e.key === ',')) {
+                              e.preventDefault();
+                            }
+                          }}
+                          className="h-6 text-xs text-center font-mono bg-input border-border"
+                        />
+                      ) : (
+                        <span className={isR0 ? "text-muted-foreground" : ""}>
+                          {isFloatRegister ? reg.value.toFixed(2) : reg.value}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs text-center font-mono">
+                      {reg.qi || "-"}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
