@@ -34,6 +34,7 @@ export interface ReservationStation {
   qk: string | null;
   a: number | null; // Address or immediate
   timeRemaining: number;
+  operandsReadyCycle?: number; // Track when operands became ready
 }
 
 export interface RegisterEntry {

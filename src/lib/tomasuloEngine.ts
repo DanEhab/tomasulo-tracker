@@ -269,6 +269,10 @@ function writeResultPhase(state: SimulatorState): void {
         rs.vk = value || 0;
         rs.qk = null;
       }
+      // Mark when operands became ready (if both are now ready)
+      if (rs.busy && rs.qj === null && rs.qk === null && rs.operandsReadyCycle === undefined) {
+        rs.operandsReadyCycle = state.cycle;
+      }
     });
     
     // Update load/store buffers waiting for base register or store value
@@ -312,6 +316,12 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
   // Execute in reservation stations
   allStations.forEach(rs => {
     if (rs.busy && rs.qj === null && rs.qk === null && rs.timeRemaining > 0) {
+      // Don't execute in the same cycle operands became ready
+      if (rs.operandsReadyCycle !== undefined && rs.operandsReadyCycle === state.cycle) {
+        console.log(`  ${rs.tag} operands just became ready, waiting until next cycle to execute`);
+        return;
+      }
+      
       rs.timeRemaining--;
       console.log(`  ${rs.tag} executing: ${rs.timeRemaining} cycles remaining`);
       
@@ -562,6 +572,7 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     rs.op = type;
     rs.a = nextInst.immediate || null;
     rs.timeRemaining = getInstructionLatency(type, config);
+    rs.operandsReadyCycle = undefined; // Reset for new instruction
     
     // Get source operands
     const allRegs = [...state.registers.float, ...state.registers.int];
