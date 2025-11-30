@@ -210,6 +210,43 @@ export function executeSimulationStep(
   return newState;
 }
 
+/**
+ * Compute the result of an arithmetic operation
+ */
+function computeResult(rs: ReservationStation): number {
+  const vj = rs.vj !== null ? rs.vj : 0;
+  const vk = rs.vk !== null ? rs.vk : 0;
+  const op = rs.op;
+  
+  console.log(`    Computing: ${op} with Vj=${vj}, Vk=${vk}`);
+  
+  // Floating-point operations
+  if (op.includes('ADD')) {
+    return vj + vk;
+  } else if (op.includes('SUB')) {
+    return vj - vk;
+  } else if (op.includes('MUL')) {
+    return vj * vk;
+  } else if (op.includes('DIV')) {
+    if (vk === 0) {
+      console.warn(`    Division by zero! Returning 0`);
+      return 0;
+    }
+    return vj / vk;
+  } else if (op === 'DADDI') {
+    // Integer add immediate: Vj + immediate (stored in 'a')
+    const immediate = rs.a !== null ? rs.a : 0;
+    return vj + immediate;
+  } else if (op === 'DSUBI') {
+    // Integer subtract immediate: Vj - immediate
+    const immediate = rs.a !== null ? rs.a : 0;
+    return vj - immediate;
+  }
+  
+  console.warn(`    Unknown operation ${op}, returning Vj`);
+  return vj;
+}
+
 function writeResultPhase(state: SimulatorState): void {
   console.log("PHASE 1: Write Result");
   
@@ -234,8 +271,17 @@ function writeResultPhase(state: SimulatorState): void {
   if (allFinished.length > 0) {
     const broadcasting = allFinished[0];
     const tag = broadcasting.tag;
-    const value = 'value' in broadcasting ? broadcasting.value : 
-                  (broadcasting.vj !== null ? broadcasting.vj : 0);
+    
+    // Calculate the actual result based on operation
+    let value: number;
+    if ('value' in broadcasting) {
+      // Load buffer - value already computed
+      value = broadcasting.value !== null ? broadcasting.value : 0;
+    } else {
+      // Reservation station - compute result
+      const rs = broadcasting as ReservationStation;
+      value = computeResult(rs);
+    }
     
     console.log(`  CDB Broadcasting: ${tag} = ${value}`);
     
