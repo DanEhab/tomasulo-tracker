@@ -568,44 +568,72 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         return;
       }
       
-      // Address is ready, move to memory access
-      if (buf.address !== null) {
-        console.log(`  ${buf.tag} address calculated: ${buf.address}`);
+      // Execute address calculation (takes LOAD latency cycles)
+      if (buf.timeRemaining > 0) {
+        buf.timeRemaining--;
+        console.log(`  ${buf.tag} calculating address: ${buf.timeRemaining} cycles remaining`);
         
-        // Check for memory conflicts with older stores
-        if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true)) {
-          console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
-          return;
-        }
-        
-        // Start cache access
-        const { latency, hit } = accessCache(buf.address, config, state, getLoadSize(inst?.type));
-        buf.timeRemaining = latency;
-        buf.stage = 'MEMORY_ACCESS';
-        
+        // Set exec start cycle on first execution
         if (inst && inst.execStartCycle === undefined) {
           inst.execStartCycle = state.cycle;
         }
         
-        console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
-        // Don't decrement in the same cycle we start - return here
+        // Address calculation completes
+        if (buf.timeRemaining === 0) {
+          // Calculate the address now
+          const allRegs = [...state.registers.int, ...state.registers.float];
+          const baseReg = allRegs.find(r => r.name === inst?.src1);
+          const offset = inst?.immediate || 0;
+          
+          if (baseReg) {
+            buf.address = baseReg.value + offset;
+          } else {
+            buf.address = offset;
+          }
+          
+          console.log(`  ${buf.tag} address calculation complete: ${buf.address}`);
+          
+          // Set exec end cycle - execution (address calculation) is complete
+          if (inst) {
+            inst.execEndCycle = state.cycle;
+          }
+          
+          // Check for memory conflicts with older stores
+          if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true)) {
+            console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
+            return;
+          }
+          
+          // Start cache access - will begin next cycle
+          const { latency, hit } = accessCache(buf.address, config, state, getLoadSize(inst?.type));
+          buf.timeRemaining = latency;
+          buf.stage = 'MEMORY_ACCESS';
+          
+          console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
+          
+          // If latency is 0, complete immediately
+          if (latency === 0) {
+            buf.value = state.memory.get(buf.address) || 0;
+            buf.stage = 'COMPLETED';
+            console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address} (instant)`);
+          }
+          
+          // Return here - don't decrement in the same cycle we transition
+          return;
+        }
         return;
       }
     }
     
-    // STAGE 2: Memory Access
+    // STAGE 2: Memory Access (cache access after execution completes)
     if (buf.stage === 'MEMORY_ACCESS' && buf.timeRemaining > 0) {
       buf.timeRemaining--;
       console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
       
       if (buf.timeRemaining === 0 && buf.address !== null) {
-        // Load completes - fetch from memory
+        // Cache access completes - fetch from memory
         buf.value = state.memory.get(buf.address) || 0;
         buf.stage = 'COMPLETED';
-        
-        if (inst) {
-          inst.execEndCycle = state.cycle;
-        }
         
         console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address}`);
       }
@@ -739,7 +767,6 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     const buf = freeStation as LoadStoreBuffer;
     buf.instructionId = nextInst.id;
     buf.stage = 'ADDRESS_CALC';
-    buf.timeRemaining = 0;
     buf.value = null;
     buf.address = null;
     buf.baseRegisterTag = null;
@@ -750,19 +777,37 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     const baseReg = allRegs.find(r => r.name === nextInst.src1);
     const offset = nextInst.immediate || 0;
     
-    if (baseReg) {
-      if (baseReg.qi === null) {
-        // Base register ready, calculate address immediately
-        buf.address = baseReg.value + offset;
-        console.log(`    Address calculated: ${baseReg.name}(${baseReg.value}) + ${offset} = ${buf.address}`);
+    if (type.startsWith('L')) {
+      // LOAD: Will calculate address over LOAD latency cycles
+      if (baseReg) {
+        if (baseReg.qi === null) {
+          // Base register ready, will calculate address during execution
+          buf.timeRemaining = getInstructionLatency(type as InstructionType, config);
+          console.log(`    Base register ${baseReg.name} ready, will compute address over ${buf.timeRemaining} cycles`);
+        } else {
+          // Base register not ready, wait for it
+          buf.baseRegisterTag = baseReg.qi;
+          buf.timeRemaining = 0;
+          console.log(`    Waiting for base register ${baseReg.name} from ${baseReg.qi}`);
+        }
       } else {
-        // Base register not ready, wait for it
-        buf.baseRegisterTag = baseReg.qi;
-        console.log(`    Waiting for base register ${baseReg.name} from ${baseReg.qi}`);
+        // No base register (should not happen in valid code)
+        buf.timeRemaining = getInstructionLatency(type as InstructionType, config);
       }
     } else {
-      // No base register (should not happen in valid code)
-      buf.address = offset;
+      // STORE: Calculate address immediately (stores work differently)
+      buf.timeRemaining = 0;
+      if (baseReg) {
+        if (baseReg.qi === null) {
+          buf.address = baseReg.value + offset;
+          console.log(`    Address calculated: ${baseReg.name}(${baseReg.value}) + ${offset} = ${buf.address}`);
+        } else {
+          buf.baseRegisterTag = baseReg.qi;
+          console.log(`    Waiting for base register ${baseReg.name} from ${baseReg.qi}`);
+        }
+      } else {
+        buf.address = offset;
+      }
     }
     
     if (type.startsWith('S')) {
