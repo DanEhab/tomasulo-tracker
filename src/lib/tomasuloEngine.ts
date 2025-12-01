@@ -318,20 +318,22 @@ function writeResultPhase(state: SimulatorState): void {
     buf => buf.busy && buf.stage === 'COMPLETED'
   );
   
-  // CDB can only broadcast one result per cycle (first come first serve - by issue order)
+  // CDB can only broadcast one result per cycle (oldest instruction first)
   const allFinished = [...finishedStations, ...finishedLoads];
   
   if (allFinished.length > 0) {
-    // Sort by instruction issue order (program order)
+    // Sort by instruction issue order - earliest issued instruction broadcasts first
     allFinished.sort((a, b) => {
-      const instA = state.instructions.find(i => {
-        const regA = [...state.registers.int, ...state.registers.float].find(r => r.qi === a.tag || (r.qi === null && r.name === i.dest));
-        return regA && regA.qi === a.tag;
-      });
-      const instB = state.instructions.find(i => {
-        const regB = [...state.registers.int, ...state.registers.float].find(r => r.qi === b.tag || (r.qi === null && r.name === i.dest));
-        return regB && regB.qi === b.tag;
-      });
+      const instIdA = ('instructionId' in a && a.instructionId !== undefined) 
+        ? a.instructionId 
+        : (a as LoadStoreBuffer).instructionId;
+      const instIdB = ('instructionId' in b && b.instructionId !== undefined) 
+        ? b.instructionId 
+        : (b as LoadStoreBuffer).instructionId;
+      
+      const instA = state.instructions.find(i => i.id === instIdA);
+      const instB = state.instructions.find(i => i.id === instIdB);
+      
       const issueA = instA?.issueCycle ?? Infinity;
       const issueB = instB?.issueCycle ?? Infinity;
       return issueA - issueB;
