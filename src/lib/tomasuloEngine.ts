@@ -10,7 +10,7 @@ import {
 export function parseInstructions(code: string): Instruction[] {
   const lines = code.trim().split('\n').filter(line => line.trim() && !line.trim().startsWith('#'));
   
-  return lines.map((line, index) => {
+  const instructions = lines.map((line, index) => {
     const cleaned = line.trim().replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ').replace(/#/g, '');
     const parts = cleaned.split(/\s+/).filter(p => p);
     console.log(`Parsing line ${index}: "${line}" -> parts:`, parts);
@@ -64,6 +64,18 @@ export function parseInstructions(code: string): Instruction[] {
       immediate,
     };
   });
+  
+  // Validate: Check if any instruction tries to write to R0
+  const r0WriteInstructions = instructions.filter(inst => 
+    inst.dest && inst.dest.toUpperCase() === 'R0'
+  );
+  
+  if (r0WriteInstructions.length > 0) {
+    const errorLines = r0WriteInstructions.map(inst => `Line ${inst.id + 1}: ${inst.raw}`).join('\n');
+    throw new Error(`Cannot write to R0 register (always 0):\n${errorLines}`);
+  }
+  
+  return instructions;
 }
 
 export function initializeSimulatorState(

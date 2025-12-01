@@ -62,9 +62,10 @@ const Index = () => {
         description: `${instructions.length} instruction(s) loaded successfully.`,
       });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to parse assembly code. Check syntax.";
       toast({
         title: "Parse Error",
-        description: "Failed to parse assembly code. Check syntax.",
+        description: errorMessage,
         variant: "destructive",
       });
     }
