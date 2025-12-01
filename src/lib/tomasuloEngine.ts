@@ -604,15 +604,23 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
             return;
           }
           
-          // Start cache access - will begin next cycle
+          // Check cache (but don't load block yet)
           const { latency, hit } = accessCache(buf.address, config, state, getLoadSize(inst?.type));
           buf.timeRemaining = latency;
           buf.stage = 'MEMORY_ACCESS';
+          
+          // Store whether this was a hit or miss, and when to load the block
+          (buf as any).cacheHit = hit;
+          // For cache miss, block should appear after miss penalty (not including hit latency)
+          (buf as any).cyclesUntilBlockLoaded = hit ? 0 : config.cache.missLatency;
           
           console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
           
           // If latency is 0, complete immediately
           if (latency === 0) {
+            if (!hit) {
+              loadBlockIntoCache(buf.address, config, state);
+            }
             buf.value = state.memory.get(buf.address) || 0;
             buf.stage = 'COMPLETED';
             console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address} (instant)`);
@@ -628,10 +636,26 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
     // STAGE 2: Memory Access (cache access after execution completes)
     if (buf.stage === 'MEMORY_ACCESS' && buf.timeRemaining > 0) {
       buf.timeRemaining--;
+      
+      // Check if we should load the block into cache (after miss penalty only, not hit latency)
+      const wasCacheHit = (buf as any).cacheHit;
+      let cyclesUntilBlockLoaded = (buf as any).cyclesUntilBlockLoaded;
+      
+      if (!wasCacheHit && cyclesUntilBlockLoaded !== undefined) {
+        cyclesUntilBlockLoaded--;
+        (buf as any).cyclesUntilBlockLoaded = cyclesUntilBlockLoaded;
+        
+        if (cyclesUntilBlockLoaded === 0 && buf.address !== null) {
+          // Miss penalty complete - load block into cache now
+          loadBlockIntoCache(buf.address, config, state);
+        }
+      }
+      
       console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
       
       if (buf.timeRemaining === 0 && buf.address !== null) {
-        // Cache access completes - fetch from memory
+        // Cache access completes (miss penalty + hit latency)
+        // Fetch value from memory
         buf.value = state.memory.get(buf.address) || 0;
         buf.stage = 'COMPLETED';
         
@@ -699,13 +723,19 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         // Store completes - write to memory and cache
         state.memory.set(buf.address, buf.value);
         
-        // Update cache with new value
+        // Update cache with new value (using same block calculation as accessCache)
         const blockSize = config.cache.blockSize;
-        const blockIndex = Math.floor(buf.address / blockSize);
-        const cacheBlock = state.cache.get(blockIndex);
-        if (cacheBlock && cacheBlock.valid) {
+        const cacheSize = config.cache.cacheSize;
+        const numCacheBlocks = cacheSize / blockSize;
+        const memoryBlockNum = Math.floor(buf.address / blockSize);
+        const cacheIndex = memoryBlockNum % numCacheBlocks;
+        
+        const cacheBlock = state.cache.get(cacheIndex);
+        if (cacheBlock && cacheBlock.valid && cacheBlock.tag === memoryBlockNum) {
+          // Update if this block is in cache
           const offsetInBlock = buf.address % blockSize;
           cacheBlock.data[offsetInBlock] = buf.value;
+          console.log(`    Updated cache block ${cacheIndex} at offset ${offsetInBlock}`);
         }
         
         buf.stage = 'COMPLETED';
@@ -942,49 +972,76 @@ function checkMemoryConflicts(
 }
 
 /**
- * Simulate cache access and return latency
+ * Check cache for hit/miss and return latency (does NOT update cache)
+ * Cache is direct-mapped: cache_index = block_number % num_cache_blocks
+ * Block number = address / block_size
  * @param address - Memory address to access
  * @param config - Simulator configuration
  * @param state - Current simulator state
  * @param accessSize - Size in bytes (4 for word, 8 for double)
- * @returns Object with latency and hit/miss status
+ * @returns Object with latency, hit/miss status, and cache location info
  */
 function accessCache(
   address: number,
   config: SimulatorConfig,
   state: SimulatorState,
   accessSize: number
-): { latency: number; hit: boolean } {
+): { latency: number; hit: boolean; cacheIndex: number; memoryBlockNum: number } {
   const blockSize = config.cache.blockSize;
-  const blockIndex = Math.floor(address / blockSize);
-  const blockTag = blockIndex;
+  const cacheSize = config.cache.cacheSize;
+  const numCacheBlocks = cacheSize / blockSize;
+  
+  // Calculate which memory block this address belongs to
+  const memoryBlockNum = Math.floor(address / blockSize);
+  
+  // Calculate cache index (direct-mapped)
+  const cacheIndex = memoryBlockNum % numCacheBlocks;
   
   // Check if block is in cache
-  const cacheBlock = state.cache.get(blockIndex);
+  const cacheBlock = state.cache.get(cacheIndex);
   
-  if (cacheBlock && cacheBlock.valid && cacheBlock.tag === blockTag) {
+  if (cacheBlock && cacheBlock.valid && cacheBlock.tag === memoryBlockNum) {
     // Cache hit
-    console.log(`    Cache HIT at address ${address} (block ${blockIndex})`);
-    return { latency: config.cache.hitLatency, hit: true };
+    console.log(`    Cache HIT at address ${address} (mem block ${memoryBlockNum} -> cache index ${cacheIndex})`);
+    return { latency: config.cache.hitLatency, hit: true, cacheIndex, memoryBlockNum };
   } else {
-    // Cache miss - need to fetch block from memory
-    console.log(`    Cache MISS at address ${address} (block ${blockIndex})`);
-    
-    // Allocate/update cache block
-    const blockStartAddr = blockIndex * blockSize;
-    const blockData: number[] = [];
-    for (let i = 0; i < blockSize; i++) {
-      blockData.push(state.memory.get(blockStartAddr + i) || 0);
-    }
-    
-    state.cache.set(blockIndex, {
-      tag: blockTag,
-      data: blockData,
-      valid: true
-    });
-    
-    return { latency: config.cache.missLatency + config.cache.hitLatency, hit: false };
+    // Cache miss - will need to fetch block from memory
+    // Total latency = miss penalty + hit latency, but block appears after miss penalty only
+    console.log(`    Cache MISS at address ${address} (mem block ${memoryBlockNum} -> cache index ${cacheIndex})`);
+    return { latency: config.cache.missLatency + config.cache.hitLatency, hit: false, cacheIndex, memoryBlockNum };
   }
+}
+
+/**
+ * Load a block into the cache (called after miss penalty completes)
+ */
+function loadBlockIntoCache(
+  address: number,
+  config: SimulatorConfig,
+  state: SimulatorState
+): void {
+  const blockSize = config.cache.blockSize;
+  const cacheSize = config.cache.cacheSize;
+  const numCacheBlocks = cacheSize / blockSize;
+  
+  const memoryBlockNum = Math.floor(address / blockSize);
+  const cacheIndex = memoryBlockNum % numCacheBlocks;
+  
+  // Fetch entire block from memory
+  const blockStartAddr = memoryBlockNum * blockSize;
+  const blockData: number[] = [];
+  for (let i = 0; i < blockSize; i++) {
+    blockData.push(state.memory.get(blockStartAddr + i) || 0);
+  }
+  
+  // Update cache with new block
+  state.cache.set(cacheIndex, {
+    tag: memoryBlockNum,
+    data: blockData,
+    valid: true
+  });
+  
+  console.log(`    Block ${memoryBlockNum} loaded into cache index ${cacheIndex}`);
 }
 
 /**

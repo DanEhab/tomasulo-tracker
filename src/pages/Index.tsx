@@ -9,6 +9,7 @@ import { ReservationStationTable } from "@/components/simulator/ReservationStati
 import { RegisterFileTable } from "@/components/simulator/RegisterFileTable";
 import { LoadStoreBufferTable } from "@/components/simulator/LoadStoreBufferTable";
 import { MemoryTable } from "@/components/simulator/MemoryTable";
+import { CacheTable } from "@/components/simulator/CacheTable";
 import { parseInstructions, initializeSimulatorState, executeSimulationStep } from "@/lib/tomasuloEngine";
 import { useToast } from "@/hooks/use-toast";
 
@@ -43,7 +44,21 @@ const Index = () => {
   const [state, setState] = useState<SimulatorState | null>(null);
   const { toast } = useToast();
 
+  const handleConfigChange = (newConfig: SimulatorConfig) => {
+    setConfig(newConfig);
+  };
+
   const handleLoadProgram = () => {
+    // Validate cache configuration before loading
+    if (config.cache.cacheSize % config.cache.blockSize !== 0) {
+      toast({
+        title: "Invalid Cache Configuration",
+        description: `Cache Size (${config.cache.cacheSize}) must be divisible by Block Size (${config.cache.blockSize}). Please adjust the values.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    
     try {
       const instructions = parseInstructions(code);
       if (instructions.length === 0) {
@@ -190,7 +205,7 @@ const Index = () => {
           {/* Left Sidebar - Configuration */}
           <div className="col-span-12 lg:col-span-3 space-y-4">
             <InstructionInput code={code} onCodeChange={setCode} />
-            <ConfigPanel config={config} onConfigChange={setConfig} />
+            <ConfigPanel config={config} onConfigChange={handleConfigChange} />
           </div>
 
           {/* Main Dashboard */}
@@ -265,13 +280,20 @@ const Index = () => {
                   />
                 </div>
 
-                <MemoryTable
-                  memory={state.memory}
-                  isEditable={state.cycle === 0}
-                  onMemoryChange={handleMemoryValueChange}
-                  onMemoryDelete={handleMemoryDelete}
-                  onMemoryAdd={handleMemoryAdd}
-                />
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  <MemoryTable
+                    memory={state.memory}
+                    isEditable={state.cycle === 0}
+                    onMemoryChange={handleMemoryValueChange}
+                    onMemoryDelete={handleMemoryDelete}
+                    onMemoryAdd={handleMemoryAdd}
+                  />
+                  <CacheTable
+                    cache={state.cache}
+                    blockSize={config.cache.blockSize}
+                    cacheSize={config.cache.cacheSize}
+                  />
+                </div>
               </>
             ) : (
               <div className="flex items-center justify-center py-32 border border-border border-dashed rounded-lg bg-card/50">
