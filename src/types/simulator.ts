@@ -90,6 +90,8 @@ export interface SimulatorConfig {
     [name: string]: number; // e.g., { R2: 16, F0: 1 }
   };
   initialMemory?: Array<{ address: number; value: number }>; // e.g., [{address:0,value:10},{address:8,value:20}]
+  // Optimization mode for advanced CDB arbitration
+  isOptimizationMode?: boolean;
 }
 
 export interface SimulatorState {

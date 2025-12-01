@@ -34,6 +34,7 @@ const defaultConfig: SimulatorConfig = {
     hitLatency: 1,
     missLatency: 10,
   },
+  isOptimizationMode: false,
 };
 
 const Index = () => {

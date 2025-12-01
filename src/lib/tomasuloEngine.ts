@@ -213,7 +213,7 @@ export function executeSimulationStep(
   console.log(`\n=== CYCLE ${newState.cycle} ===`);
   
   // PHASE 1: Write Result (CDB Broadcast)
-  writeResultPhase(newState);
+  writeResultPhase(newState, config);
   
   // PHASE 2: Execute (Decrement time for ready operations)
   executePhase(newState, config);
@@ -299,7 +299,56 @@ function computeResult(rs: ReservationStation): number {
   return vj;
 }
 
-function writeResultPhase(state: SimulatorState): void {
+/**
+ * Count how many reservation stations are waiting for this tag
+ */
+function countFanOut(
+  tag: string,
+  allStations: ReservationStation[],
+  loadStoreBuffers: { load: LoadStoreBuffer[]; store: LoadStoreBuffer[] }
+): number {
+  let count = 0;
+  
+  // Check reservation stations
+  allStations.forEach(rs => {
+    if (rs.busy && (rs.qj === tag || rs.qk === tag)) {
+      count++;
+    }
+  });
+  
+  // Check load/store buffers
+  [...loadStoreBuffers.load, ...loadStoreBuffers.store].forEach(buf => {
+    if (buf.busy && (buf.baseRegisterTag === tag || buf.storeValueTag === tag)) {
+      count++;
+    }
+  });
+  
+  return count;
+}
+
+/**
+ * Get the longest latency of instructions waiting for this tag
+ */
+function getCriticalPath(
+  tag: string,
+  allStations: ReservationStation[],
+  config: SimulatorConfig
+): number {
+  let maxLatency = 0;
+  
+  allStations.forEach(rs => {
+    if (rs.busy && (rs.qj === tag || rs.qk === tag)) {
+      const latency = getInstructionLatency(rs.op as InstructionType, config);
+      if (latency > maxLatency) {
+        maxLatency = latency;
+      }
+    }
+  });
+  
+  return maxLatency;
+}
+
+function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void {
   console.log("PHASE 1: Write Result");
   
   const allStations = [
@@ -318,26 +367,66 @@ function writeResultPhase(state: SimulatorState): void {
     buf => buf.busy && buf.stage === 'COMPLETED'
   );
   
-  // CDB can only broadcast one result per cycle (oldest instruction first)
+  // CDB can only broadcast one result per cycle
   const allFinished = [...finishedStations, ...finishedLoads];
   
   if (allFinished.length > 0) {
-    // Sort by instruction issue order - earliest issued instruction broadcasts first
-    allFinished.sort((a, b) => {
-      const instIdA = ('instructionId' in a && a.instructionId !== undefined) 
-        ? a.instructionId 
-        : (a as LoadStoreBuffer).instructionId;
-      const instIdB = ('instructionId' in b && b.instructionId !== undefined) 
-        ? b.instructionId 
-        : (b as LoadStoreBuffer).instructionId;
-      
-      const instA = state.instructions.find(i => i.id === instIdA);
-      const instB = state.instructions.find(i => i.id === instIdB);
-      
-      const issueA = instA?.issueCycle ?? Infinity;
-      const issueB = instB?.issueCycle ?? Infinity;
-      return issueA - issueB;
-    });
+    // Select winner based on mode
+    if (config.isOptimizationMode) {
+      // Heuristic arbitration: fan-out, critical path, then oldest
+      allFinished.sort((a, b) => {
+        const tagA = a.tag;
+        const tagB = b.tag;
+        
+        // 1. Calculate fan-out (how many RS are waiting for this tag)
+        const fanOutA = countFanOut(tagA, allStations, state.loadStoreBuffers);
+        const fanOutB = countFanOut(tagB, allStations, state.loadStoreBuffers);
+        
+        if (fanOutA !== fanOutB) {
+          return fanOutB - fanOutA; // Higher fan-out first
+        }
+        
+        // 2. Critical path (longest latency of dependent instructions)
+        const criticalPathA = getCriticalPath(tagA, allStations, config);
+        const criticalPathB = getCriticalPath(tagB, allStations, config);
+        
+        if (criticalPathA !== criticalPathB) {
+          return criticalPathB - criticalPathA; // Longer critical path first
+        }
+        
+        // 3. Tie-breaker: oldest instruction
+        const instIdA = ('instructionId' in a && a.instructionId !== undefined) 
+          ? a.instructionId 
+          : (a as LoadStoreBuffer).instructionId;
+        const instIdB = ('instructionId' in b && b.instructionId !== undefined) 
+          ? b.instructionId 
+          : (b as LoadStoreBuffer).instructionId;
+        
+        const instA = state.instructions.find(i => i.id === instIdA);
+        const instB = state.instructions.find(i => i.id === instIdB);
+        
+        const issueA = instA?.issueCycle ?? Infinity;
+        const issueB = instB?.issueCycle ?? Infinity;
+        return issueA - issueB;
+      });
+    } else {
+      // Default: oldest instruction first
+      allFinished.sort((a, b) => {
+        const instIdA = ('instructionId' in a && a.instructionId !== undefined) 
+          ? a.instructionId 
+          : (a as LoadStoreBuffer).instructionId;
+        const instIdB = ('instructionId' in b && b.instructionId !== undefined) 
+          ? b.instructionId 
+          : (b as LoadStoreBuffer).instructionId;
+        
+        const instA = state.instructions.find(i => i.id === instIdA);
+        const instB = state.instructions.find(i => i.id === instIdB);
+        
+        const issueA = instA?.issueCycle ?? Infinity;
+        const issueB = instB?.issueCycle ?? Infinity;
+        return issueA - issueB;
+      });
+    }
     
     const broadcasting = allFinished[0];
     const tag = broadcasting.tag;

@@ -1,6 +1,7 @@
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
 import { SimulatorConfig } from "@/types/simulator";
 
 interface ConfigPanelProps {
@@ -186,6 +187,25 @@ export const ConfigPanel = ({ config, onConfigChange }: ConfigPanelProps) => {
               value={config.cache.missLatency}
               onChange={(e) => updateCache('missLatency', parseInt(e.target.value))}
               className="w-16 h-7 text-xs bg-input border-border"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-card border-border">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold text-primary">Advanced Settings</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label className="text-xs font-medium text-foreground">Optimization Mode</Label>
+              <p className="text-xs text-muted-foreground">Heuristic CDB arbitration</p>
+            </div>
+            <Switch
+              checked={config.isOptimizationMode || false}
+              onCheckedChange={(checked) => onConfigChange({ ...config, isOptimizationMode: checked })}
+              className="data-[state=checked]:bg-primary"
             />
           </div>
         </CardContent>
