@@ -17,12 +17,14 @@ const defaultConfig: SimulatorConfig = {
     ADD: 2,
     MUL: 10,
     DIV: 40,
+    INT_ADD: 1,
     LOAD: 2,
     STORE: 2,
   },
   reservationStations: {
     adders: 3,
     multipliers: 2,
+    intAdders: 2,
     loadBuffers: 3,
     storeBuffers: 3,
   },
@@ -219,7 +221,7 @@ const Index = () => {
                 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                   <ReservationStationTable 
-                    title="Add/Sub Reservation Stations"
+                    title="FP Add/Sub Reservation Stations"
                     stations={state.reservationStations.add}
                   />
                   <ReservationStationTable 
@@ -229,10 +231,17 @@ const Index = () => {
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  <ReservationStationTable 
+                    title="Integer Add/Sub Reservation Stations"
+                    stations={state.reservationStations.intAdd}
+                  />
                   <LoadStoreBufferTable 
                     title="Load Buffers"
                     buffers={state.loadStoreBuffers.load}
                   />
+                </div>
+
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                   <LoadStoreBufferTable 
                     title="Store Buffers"
                     buffers={state.loadStoreBuffers.store}

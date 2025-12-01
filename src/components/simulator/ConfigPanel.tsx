@@ -65,6 +65,15 @@ export const ConfigPanel = ({ config, onConfigChange }: ConfigPanelProps) => {
             />
           </div>
           <div className="flex items-center justify-between">
+            <Label className="text-xs text-muted-foreground">INT_ADD</Label>
+            <Input
+              type="number"
+              value={config.latencies.INT_ADD}
+              onChange={(e) => updateLatency('INT_ADD', parseInt(e.target.value))}
+              className="w-16 h-7 text-xs bg-input border-border"
+            />
+          </div>
+          <div className="flex items-center justify-between">
             <Label className="text-xs text-muted-foreground">LOAD</Label>
             <Input
               type="number"
@@ -105,6 +114,15 @@ export const ConfigPanel = ({ config, onConfigChange }: ConfigPanelProps) => {
               type="number"
               value={config.reservationStations.multipliers}
               onChange={(e) => updateRS('multipliers', parseInt(e.target.value))}
+              className="w-16 h-7 text-xs bg-input border-border"
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <Label className="text-xs text-muted-foreground">Integer Adders</Label>
+            <Input
+              type="number"
+              value={config.reservationStations.intAdders}
+              onChange={(e) => updateRS('intAdders', parseInt(e.target.value))}
               className="w-16 h-7 text-xs bg-input border-border"
             />
           </div>

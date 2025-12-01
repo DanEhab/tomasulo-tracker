@@ -67,12 +67,14 @@ export interface SimulatorConfig {
     ADD: number;
     MUL: number;
     DIV: number;
+    INT_ADD: number;
     LOAD: number;
     STORE: number;
   };
   reservationStations: {
     adders: number;
     multipliers: number;
+    intAdders: number;
     loadBuffers: number;
     storeBuffers: number;
   };
@@ -95,6 +97,7 @@ export interface SimulatorState {
   reservationStations: {
     add: ReservationStation[];
     mul: ReservationStation[];
+    intAdd: ReservationStation[];
   };
   loadStoreBuffers: {
     load: LoadStoreBuffer[];

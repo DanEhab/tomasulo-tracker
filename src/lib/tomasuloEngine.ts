@@ -11,7 +11,7 @@ export function parseInstructions(code: string): Instruction[] {
   const lines = code.trim().split('\n').filter(line => line.trim() && !line.trim().startsWith('#'));
   
   return lines.map((line, index) => {
-    const cleaned = line.trim().replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ');
+    const cleaned = line.trim().replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ').replace(/#/g, '');
     const parts = cleaned.split(/\s+/).filter(p => p);
     console.log(`Parsing line ${index}: "${line}" -> parts:`, parts);
     // Handle split opcode tokens like "L. D" or "ADD. D" by merging
@@ -94,6 +94,18 @@ export function initializeSimulatorState(
     timeRemaining: 0,
   }));
 
+  const intAddStations: ReservationStation[] = Array.from({ length: config.reservationStations.intAdders }, (_, i) => ({
+    tag: `IntAdd${i + 1}`,
+    busy: false,
+    op: "",
+    vj: null,
+    vk: null,
+    qj: null,
+    qk: null,
+    a: null,
+    timeRemaining: 0,
+  }));
+
   const loadBuffers: LoadStoreBuffer[] = Array.from({ length: config.reservationStations.loadBuffers }, (_, i) => ({
     tag: `Load${i + 1}`,
     busy: false,
@@ -136,6 +148,7 @@ export function initializeSimulatorState(
     reservationStations: {
       add: addStations,
       mul: mulStations,
+      intAdd: intAddStations,
     },
     loadStoreBuffers: {
       load: loadBuffers,
@@ -263,13 +276,11 @@ function computeResult(rs: ReservationStation): number {
     }
     return result;
   } else if (op === 'DADDI') {
-    // Integer add immediate: Vj + immediate (stored in 'a')
-    const immediate = rs.a !== null ? rs.a : 0;
-    return vj + immediate;
+    // Integer add immediate: Vj + Vk (immediate is in Vk)
+    return vj + vk;
   } else if (op === 'DSUBI') {
-    // Integer subtract immediate: Vj - immediate
-    const immediate = rs.a !== null ? rs.a : 0;
-    return vj - immediate;
+    // Integer subtract immediate: Vj - Vk (immediate is in Vk)
+    return vj - vk;
   }
   
   console.warn(`    Unknown operation ${op}, returning Vj`);
@@ -281,7 +292,8 @@ function writeResultPhase(state: SimulatorState): void {
   
   const allStations = [
     ...state.reservationStations.add,
-    ...state.reservationStations.mul
+    ...state.reservationStations.mul,
+    ...state.reservationStations.intAdd
   ];
   
   // Find stations that finished execution
@@ -385,7 +397,8 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
   
   const allStations = [
     ...state.reservationStations.add,
-    ...state.reservationStations.mul
+    ...state.reservationStations.mul,
+    ...state.reservationStations.intAdd
   ];
   
   // Execute in reservation stations
@@ -568,7 +581,9 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   let isLoadStore = false;
   
   // Determine which RS/Buffer to use
-  if (type.includes('ADD') || type.includes('SUB') || type === 'DADDI' || type === 'DSUBI') {
+  if (type === 'DADDI' || type === 'DSUBI') {
+    targetStations = state.reservationStations.intAdd;
+  } else if (type.includes('ADD') || type.includes('SUB')) {
     targetStations = state.reservationStations.add;
   } else if (type.includes('MUL') || type.includes('DIV')) {
     targetStations = state.reservationStations.mul;
@@ -670,7 +685,13 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
       }
     }
     
-    if (nextInst.src2) {
+    // For DADDI/DSUBI, immediate goes into Vk, otherwise use src2 register
+    if (type === 'DADDI' || type === 'DSUBI') {
+      // Immediate value goes directly into Vk
+      rs.vk = nextInst.immediate !== undefined ? nextInst.immediate : 0;
+      rs.qk = null;
+      console.log(`    Immediate set: Vk=${rs.vk}, Qk=${rs.qk}`);
+    } else if (nextInst.src2) {
       const src2Reg = allRegs.find(r => r.name === nextInst.src2);
       console.log(`    src2Reg found: ${src2Reg ? `${src2Reg.name}=${src2Reg.value}, qi=${src2Reg.qi}` : 'NOT FOUND'}`);
       if (src2Reg) {
@@ -817,7 +838,10 @@ function getStoreSize(type?: InstructionType): number {
 }
 
 export function getInstructionLatency(type: InstructionType, config: SimulatorConfig): number {
-  if (type.includes('ADD') || type.includes('SUB') || type.includes('DADDI') || type.includes('DSUBI')) {
+  if (type === 'DADDI' || type === 'DSUBI') {
+    return config.latencies.INT_ADD;
+  }
+  if (type.includes('ADD') || type.includes('SUB')) {
     return config.latencies.ADD;
   }
   if (type.includes('MUL')) {
