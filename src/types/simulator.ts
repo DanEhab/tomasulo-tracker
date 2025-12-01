@@ -35,6 +35,7 @@ export interface ReservationStation {
   a: number | null; // Address or immediate
   timeRemaining: number;
   operandsReadyCycle?: number; // Track when operands became ready
+  instructionId?: number; // Track which instruction occupies this station
 }
 
 export interface RegisterEntry {

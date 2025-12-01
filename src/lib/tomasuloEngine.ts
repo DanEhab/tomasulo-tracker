@@ -341,13 +341,16 @@ function writeResultPhase(state: SimulatorState): void {
     
     console.log(`  CDB Broadcasting: ${tag} = ${value}`);
     
-    // Update instruction status
-    const inst = state.instructions.find(i => 
-      i.issueCycle !== undefined && i.writeResultCycle === undefined &&
-      (state.registers.float.find(r => r.name === i.dest && r.qi === tag) ||
-       state.registers.int.find(r => r.name === i.dest && r.qi === tag))
-    );
-    if (inst) {
+    // Update instruction status using instructionId
+    let inst: typeof state.instructions[0] | undefined;
+    if ('instructionId' in broadcasting && broadcasting.instructionId !== undefined) {
+      inst = state.instructions.find(i => i.id === broadcasting.instructionId);
+    } else {
+      // Fallback for load buffers
+      inst = state.instructions.find(i => i.id === (broadcasting as LoadStoreBuffer).instructionId);
+    }
+    
+    if (inst && inst.writeResultCycle === undefined) {
       inst.writeResultCycle = state.cycle;
       console.log(`  Instruction ${inst.id} (${inst.raw}) completed`);
     }
@@ -358,6 +361,11 @@ function writeResultPhase(state: SimulatorState): void {
         reg.value = value || 0;
         reg.qi = null;
         console.log(`  Register ${reg.name} updated to ${reg.value}`);
+      } else if (inst && reg.name === inst.dest && reg.qi !== null && reg.qi !== tag) {
+        // WAW hazard: This instruction writes to this register, but register was renamed by a later instruction
+        // Update the value but keep the qi pointing to the later instruction
+        reg.value = value || 0;
+        console.log(`  Register ${reg.name} value updated to ${reg.value} (WAW: qi still ${reg.qi})`);
       }
     });
     
@@ -404,6 +412,9 @@ function writeResultPhase(state: SimulatorState): void {
     // Free the broadcasting unit
     broadcasting.busy = false;
     broadcasting.timeRemaining = 0;
+    if ('instructionId' in broadcasting) {
+      broadcasting.instructionId = undefined;
+    }
     if ('stage' in broadcasting) {
       broadcasting.stage = 'ADDRESS_CALC';
     }
@@ -432,11 +443,7 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       console.log(`  ${rs.tag} executing: ${rs.timeRemaining} cycles remaining`);
       
       // Update instruction exec timing
-      const inst = state.instructions.find(i => {
-        const destReg = [...state.registers.float, ...state.registers.int]
-          .find(r => r.name === i.dest);
-        return destReg && destReg.qi === rs.tag && i.execStartCycle === undefined;
-      });
+      const inst = state.instructions.find(i => i.id === rs.instructionId);
       if (inst && inst.execStartCycle === undefined) {
         inst.execStartCycle = state.cycle;
         inst.execEndCycle = state.cycle + rs.timeRemaining;
@@ -681,6 +688,7 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     rs.a = nextInst.immediate || null;
     rs.timeRemaining = getInstructionLatency(type, config);
     rs.operandsReadyCycle = undefined; // Reset for new instruction
+    rs.instructionId = nextInst.id; // Track which instruction this is
     
     // Get source operands
     const allRegs = [...state.registers.float, ...state.registers.int];
