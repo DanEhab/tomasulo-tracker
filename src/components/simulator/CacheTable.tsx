@@ -23,11 +23,11 @@ export const CacheTable = ({ cache, blockSize, cacheSize }: CacheTableProps) => 
   });
 
   const formatData = (data: number[], blockSize: number) => {
-    if (data.length === 0) return '-';
+    if (data.length === 0) return null;
     const values = Array.from({ length: blockSize }, (_, i) => 
       data[i] !== undefined ? data[i] : 0
     );
-    return values.map(v => v.toString()).join(', ');
+    return values;
   };
 
   const getMemoryRange = (tag: number | undefined, blockSize: number) => {
@@ -45,11 +45,11 @@ export const CacheTable = ({ cache, blockSize, cacheSize }: CacheTableProps) => 
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="rounded-md border border-border overflow-hidden">
+        <div className="rounded-md border border-border overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow className="bg-secondary border-border hover:bg-secondary">
-                <TableHead className="text-xs font-semibold text-foreground">Index</TableHead>
+                <TableHead className="text-xs font-semibold text-foreground sticky left-0 bg-secondary z-10">Index</TableHead>
                 <TableHead className="text-xs font-semibold text-foreground text-center">Valid</TableHead>
                 <TableHead className="text-xs font-semibold text-foreground">Block Tag</TableHead>
                 <TableHead className="text-xs font-semibold text-foreground">Memory Range</TableHead>
@@ -57,32 +57,46 @@ export const CacheTable = ({ cache, blockSize, cacheSize }: CacheTableProps) => 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {cacheEntries.map((entry) => (
-                <TableRow 
-                  key={entry.cacheIndex} 
-                  className={`border-border ${entry.valid ? 'bg-status-ready/10' : 'text-muted-foreground'}`}
-                >
-                  <TableCell className="font-mono text-xs font-semibold">
-                    {entry.cacheIndex}
-                  </TableCell>
-                  <TableCell className="text-xs text-center">
-                    {entry.valid ? (
-                      <span className="text-status-ready font-semibold">✓</span>
-                    ) : (
-                      <span className="text-muted-foreground">-</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {entry.tag !== undefined ? entry.tag : '-'}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {getMemoryRange(entry.tag, blockSize)}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs truncate max-w-[200px]">
-                    {formatData(entry.data, blockSize)}
-                  </TableCell>
-                </TableRow>
-              ))}
+              {cacheEntries.map((entry) => {
+                const dataValues = formatData(entry.data, blockSize);
+                return (
+                  <TableRow 
+                    key={entry.cacheIndex} 
+                    className={`border-border ${entry.valid ? 'bg-status-ready/10' : 'text-muted-foreground'}`}
+                  >
+                    <TableCell className="font-mono text-xs font-semibold sticky left-0 bg-card z-10">
+                      {entry.cacheIndex}
+                    </TableCell>
+                    <TableCell className="text-xs text-center">
+                      {entry.valid ? (
+                        <span className="text-status-ready font-semibold">✓</span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {entry.tag !== undefined ? entry.tag : '-'}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {getMemoryRange(entry.tag, blockSize)}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {dataValues ? (
+                        <div className="flex gap-2 whitespace-nowrap">
+                          {dataValues.map((value, idx) => (
+                            <span key={idx} className="inline-block">
+                              {value}
+                              {idx < dataValues.length - 1 ? ',' : ''}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        '-'
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
