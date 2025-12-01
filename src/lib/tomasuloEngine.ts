@@ -306,10 +306,25 @@ function writeResultPhase(state: SimulatorState): void {
     buf => buf.busy && buf.stage === 'COMPLETED'
   );
   
-  // CDB can only broadcast one result per cycle (first come first serve)
+  // CDB can only broadcast one result per cycle (first come first serve - by issue order)
   const allFinished = [...finishedStations, ...finishedLoads];
   
   if (allFinished.length > 0) {
+    // Sort by instruction issue order (program order)
+    allFinished.sort((a, b) => {
+      const instA = state.instructions.find(i => {
+        const regA = [...state.registers.int, ...state.registers.float].find(r => r.qi === a.tag || (r.qi === null && r.name === i.dest));
+        return regA && regA.qi === a.tag;
+      });
+      const instB = state.instructions.find(i => {
+        const regB = [...state.registers.int, ...state.registers.float].find(r => r.qi === b.tag || (r.qi === null && r.name === i.dest));
+        return regB && regB.qi === b.tag;
+      });
+      const issueA = instA?.issueCycle ?? Infinity;
+      const issueB = instB?.issueCycle ?? Infinity;
+      return issueA - issueB;
+    });
+    
     const broadcasting = allFinished[0];
     const tag = broadcasting.tag;
     
@@ -348,16 +363,19 @@ function writeResultPhase(state: SimulatorState): void {
     
     // Update all RS waiting for this tag
     allStations.forEach(rs => {
+      let wasWaitingForThis = false;
       if (rs.qj === tag) {
         rs.vj = value || 0;
         rs.qj = null;
+        wasWaitingForThis = true;
       }
       if (rs.qk === tag) {
         rs.vk = value || 0;
         rs.qk = null;
+        wasWaitingForThis = true;
       }
-      // Mark when operands became ready (if both are now ready)
-      if (rs.busy && rs.qj === null && rs.qk === null && rs.operandsReadyCycle === undefined) {
+      // Mark when operands became ready (only if THIS broadcast made both operands ready)
+      if (wasWaitingForThis && rs.busy && rs.qj === null && rs.qk === null && rs.operandsReadyCycle === undefined) {
         rs.operandsReadyCycle = state.cycle;
       }
     });
