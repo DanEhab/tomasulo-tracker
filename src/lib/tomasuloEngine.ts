@@ -621,7 +621,7 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
             if (!hit) {
               loadBlockIntoCache(buf.address, config, state);
             }
-            buf.value = state.memory.get(buf.address) || 0;
+            buf.value = loadValueFromMemory(buf.address, inst?.type, state.memory);
             buf.stage = 'COMPLETED';
             console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address} (instant)`);
           }
@@ -656,7 +656,7 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       if (buf.timeRemaining === 0 && buf.address !== null) {
         // Cache access completes (miss penalty + hit latency)
         // Fetch value from memory
-        buf.value = state.memory.get(buf.address) || 0;
+        buf.value = loadValueFromMemory(buf.address, inst?.type, state.memory);
         buf.stage = 'COMPLETED';
         
         console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address}`);
@@ -720,8 +720,8 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
       
       if (buf.timeRemaining === 0 && buf.address !== null && buf.value !== null) {
-        // Store completes - write to memory and cache
-        state.memory.set(buf.address, buf.value);
+        // Store completes - write to memory with proper byte ordering
+        storeValueToMemory(buf.address, buf.value, inst?.type, state.memory);
         
         // Update cache with new value (using same block calculation as accessCache)
         const blockSize = config.cache.blockSize;
@@ -732,10 +732,14 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         
         const cacheBlock = state.cache.get(cacheIndex);
         if (cacheBlock && cacheBlock.valid && cacheBlock.tag === memoryBlockNum) {
-          // Update if this block is in cache
-          const offsetInBlock = buf.address % blockSize;
-          cacheBlock.data[offsetInBlock] = buf.value;
-          console.log(`    Updated cache block ${cacheIndex} at offset ${offsetInBlock}`);
+          // Update all bytes in cache that were written
+          const numBytes = getStoreSize(inst?.type);
+          for (let i = 0; i < numBytes; i++) {
+            const offsetInBlock = (buf.address + i) % blockSize;
+            const byte = (buf.value >> (i * 8)) & 0xFF;
+            cacheBlock.data[offsetInBlock] = byte;
+          }
+          console.log(`    Updated cache block ${cacheIndex} with ${numBytes} bytes`);
         }
         
         buf.stage = 'COMPLETED';
@@ -1042,6 +1046,122 @@ function loadBlockIntoCache(
   });
   
   console.log(`    Block ${memoryBlockNum} loaded into cache index ${cacheIndex}`);
+}
+
+/**
+ * Load value from memory with proper byte ordering and sign extension
+ * @param address - Starting memory address
+ * @param type - Instruction type (L.S, L.D, etc.)
+ * @param memory - Memory map
+ * @returns The loaded value (sign-extended for single-precision)
+ */
+function loadValueFromMemory(
+  address: number,
+  type: InstructionType | undefined,
+  memory: Map<number, number>
+): number {
+  if (!type) return memory.get(address) || 0;
+  
+  // Determine how many bytes to load
+  const isDoublePrecision = type === 'LD' || type === 'L.D';
+  const numBytes = isDoublePrecision ? 8 : 4;
+  
+  // Load bytes from memory (little-endian: LSB at lowest address)
+  // For address 20: M20 (LSB), M21, M22, M23 (MSB for 4 bytes)
+  const bytes: number[] = [];
+  for (let i = 0; i < numBytes; i++) {
+    bytes.push(memory.get(address + i) || 0);
+  }
+  
+  console.log(`    Loading ${numBytes} bytes from address ${address}: [${bytes.join(', ')}]`);
+  
+  if (isDoublePrecision) {
+    // For double-precision (64-bit), use BigInt to avoid 32-bit truncation
+    // Read lower 32-bit word (bytes 0-3)
+    let lowerWord = 0;
+    for (let i = 0; i < 4; i++) {
+      lowerWord |= (bytes[i] & 0xFF) << (i * 8);
+    }
+    // Ensure it's treated as unsigned 32-bit
+    lowerWord = lowerWord >>> 0;
+    
+    // Read upper 32-bit word (bytes 4-7)
+    let upperWord = 0;
+    for (let i = 0; i < 4; i++) {
+      upperWord |= (bytes[4 + i] & 0xFF) << (i * 8);
+    }
+    // Ensure it's treated as unsigned 32-bit
+    upperWord = upperWord >>> 0;
+    
+    // Combine using BigInt: FinalResult = BigInt(LowerWord) | (BigInt(UpperWord) << 32n)
+    const lowerBigInt = BigInt(lowerWord);
+    const upperBigInt = BigInt(upperWord);
+    const combined = lowerBigInt | (upperBigInt << 32n);
+    
+    // Convert back to JavaScript number (as 64-bit float)
+    const value = Number(combined);
+    
+    console.log(`    Double-precision: Lower=0x${lowerWord.toString(16).padStart(8, '0')}, Upper=0x${upperWord.toString(16).padStart(8, '0')}`);
+    console.log(`    Combined value: 0x${combined.toString(16).padStart(16, '0')} = ${value}`);
+    
+    return value;
+  } else {
+    // For single-precision (32-bit), combine bytes normally
+    let value = 0;
+    for (let i = 0; i < 4; i++) {
+      value |= (bytes[i] & 0xFF) << (i * 8);
+    }
+    
+    // Check if the MSB (bit 31) is set for sign extension
+    const isNegative = (value & 0x80000000) !== 0;
+    if (isNegative) {
+      // Sign extend to 64-bit by filling upper 32 bits with 1s
+      // Convert to signed 32-bit integer first
+      value = value | 0; // Force to signed 32-bit
+    }
+    
+    console.log(`    Single-precision value (sign-extended): ${value}`);
+    return value;
+  }
+}
+
+/**
+ * Store value to memory with proper byte ordering
+ * @param address - Starting memory address
+ * @param value - Value to store
+ * @param type - Instruction type (S.S, S.D, etc.)
+ * @param memory - Memory map
+ */
+function storeValueToMemory(
+  address: number,
+  value: number,
+  type: InstructionType | undefined,
+  memory: Map<number, number>
+): void {
+  if (!type) {
+    memory.set(address, value);
+    return;
+  }
+  
+  // Determine how many bytes to store
+  const isDoublePrecision = type === 'SD' || type === 'S.D';
+  const numBytes = isDoublePrecision ? 8 : 4;
+  
+  // For single-precision, mask to 32 bits (ignore sign extension)
+  let valueToStore = value;
+  if (!isDoublePrecision) {
+    valueToStore = value & 0xFFFFFFFF;
+  }
+  
+  console.log(`    Storing ${numBytes} bytes to address ${address}, value: ${valueToStore}`);
+  
+  // Store bytes to memory (little-endian: LSB at lowest address)
+  // For value 0x12345678 at address 20: M20=0x78, M21=0x56, M22=0x34, M23=0x12
+  for (let i = 0; i < numBytes; i++) {
+    const byte = (valueToStore >> (i * 8)) & 0xFF;
+    memory.set(address + i, byte);
+    console.log(`      M[${address + i}] = ${byte}`);
+  }
 }
 
 /**
