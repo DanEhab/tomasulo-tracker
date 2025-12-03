@@ -2,6 +2,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { RegisterEntry } from "@/types/simulator";
+import { getRegisterBigIntValue } from "@/lib/tomasuloEngine";
 
 interface RegisterFileTableProps {
   title: string;
@@ -72,7 +73,23 @@ export const RegisterFileTable = ({ title, registers, isEditable, onValueChange 
                         />
                       ) : (
                         <span className={isR0 ? "text-muted-foreground" : ""}>
-                          {isFloatRegister ? reg.value.toFixed(2) : reg.value}
+                          {(() => {
+                            if (isFloatRegister) {
+                              return reg.value.toFixed(2);
+                            }
+                            // For integer registers, check if BigInt value exists and if precision was lost
+                            const bigIntVal = getRegisterBigIntValue(reg.name);
+                            if (bigIntVal !== undefined) {
+                              // Check if converting BigInt to Number loses precision
+                              const numValue = Number(bigIntVal);
+                              if (numValue !== reg.value || !Number.isSafeInteger(numValue)) {
+                                // Precision loss detected - show hex
+                                return `0x${bigIntVal.toString(16).toUpperCase()}`;
+                              }
+                            }
+                            // No precision loss or no BigInt - show decimal
+                            return reg.value;
+                          })()}
                         </span>
                       )}
                     </TableCell>

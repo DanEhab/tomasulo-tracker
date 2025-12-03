@@ -7,6 +7,12 @@ import {
   InstructionType 
 } from "@/types/simulator";
 
+// Global map to store BigInt values to preserve precision (avoids JSON serialization issues)
+// Key formats: 
+// - "reg:registerName" for register values (e.g., "reg:R2")
+// - "buf:tag" for load/store buffer values (e.g., "buf:Load1", "buf:Store1")
+const bigIntValues = new Map<string, bigint>();
+
 export function parseInstructions(code: string): Instruction[] {
   const lines = code.trim().split('\n').filter(line => line.trim() && !line.trim().startsWith('#'));
   
@@ -541,16 +547,21 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
     
     // Calculate the actual result based on operation
     let value: number;
+    let bigIntValue: bigint | undefined;
+    
     if ('value' in broadcasting) {
       // Load buffer - value already computed
       value = broadcasting.value !== null ? broadcasting.value : 0;
+      // Check if there's a BigInt value stored for this load (for LD instructions)
+      const bufKey = `buf:${tag}`;
+      bigIntValue = bigIntValues.get(bufKey);
     } else {
       // Reservation station - compute result
       const rs = broadcasting as ReservationStation;
       value = computeResult(rs);
     }
     
-    console.log(`  CDB Broadcasting: ${tag} = ${value}`);
+    console.log(`  CDB Broadcasting: ${tag} = ${value}${bigIntValue ? ` (BigInt: 0x${bigIntValue.toString(16)})` : ''}`);
     
     // Update instruction status using instructionId
     let inst: typeof state.instructions[0] | undefined;
@@ -571,11 +582,22 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
       if (reg.qi === tag) {
         reg.value = value || 0;
         reg.qi = null;
-        console.log(`  Register ${reg.name} updated to ${reg.value}`);
+        // Store BigInt value for LD instructions to R registers
+        if (bigIntValue !== undefined && reg.type === 'INT') {
+          const key = `reg:${reg.name}`;
+          bigIntValues.set(key, bigIntValue);
+          console.log(`  Register ${reg.name} updated to ${reg.value} (exact: 0x${bigIntValue.toString(16)})`);
+        } else {
+          console.log(`  Register ${reg.name} updated to ${reg.value}`);
+        }
       } else if (inst && reg.name === inst.dest && reg.qi !== null && reg.qi !== tag) {
         // WAW hazard: This instruction writes to this register, but register was renamed by a later instruction
         // Update the value but keep the qi pointing to the later instruction
         reg.value = value || 0;
+        if (bigIntValue !== undefined && reg.type === 'INT') {
+          const key = `reg:${reg.name}`;
+          bigIntValues.set(key, bigIntValue);
+        }
         console.log(`  Register ${reg.name} value updated to ${reg.value} (WAW: qi still ${reg.qi})`);
       }
     });
@@ -614,8 +636,13 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
         // Update store value dependency
         if (buf.storeValueTag === tag) {
           buf.value = value || 0;
+          // Also copy BigInt value if available (for SD instructions storing from R registers)
+          if (bigIntValue !== undefined) {
+            const bufKey = `buf:${buf.tag}`;
+            bigIntValues.set(bufKey, bigIntValue);
+          }
           buf.storeValueTag = null;
-          console.log(`  ${buf.tag} store value resolved: ${buf.value}`);
+          console.log(`  ${buf.tag} store value resolved: ${buf.value}${bigIntValue ? ` (BigInt: 0x${bigIntValue.toString(16)})` : ''}`);
         }
       }
     });
@@ -729,7 +756,12 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
             if (!hit) {
               loadBlockIntoCache(buf.address, config, state);
             }
-            buf.value = loadValueFromMemory(buf.address, inst?.type, state.memory);
+            const loadResult = loadValueFromMemory(buf.address, inst?.type, state.memory);
+            buf.value = loadResult.value;
+            if (loadResult.bigIntValue !== undefined) {
+              const bufKey = `buf:${buf.tag}`;
+              bigIntValues.set(bufKey, loadResult.bigIntValue);
+            }
             buf.stage = 'COMPLETED';
             console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address} (instant)`);
           }
@@ -764,7 +796,12 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       if (buf.timeRemaining === 0 && buf.address !== null) {
         // Cache access completes (miss penalty + hit latency)
         // Fetch value from memory
-        buf.value = loadValueFromMemory(buf.address, inst?.type, state.memory);
+        const loadResult = loadValueFromMemory(buf.address, inst?.type, state.memory);
+        buf.value = loadResult.value;
+        if (loadResult.bigIntValue !== undefined) {
+          const bufKey = `buf:${buf.tag}`;
+          bigIntValues.set(bufKey, loadResult.bigIntValue);
+        }
         buf.stage = 'COMPLETED';
         
         console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address}`);
@@ -829,7 +866,9 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       
       if (buf.timeRemaining === 0 && buf.address !== null && buf.value !== null) {
         // Store completes - write to memory with proper byte ordering
-        storeValueToMemory(buf.address, buf.value, inst?.type, state.memory);
+        const bufKey = `buf:${buf.tag}`;
+        const bigIntVal = bigIntValues.get(bufKey);
+        storeValueToMemory(buf.address, buf.value, inst?.type, state.memory, bigIntVal);
         
         // Update cache with new value (using same block calculation as accessCache)
         const blockSize = config.cache.blockSize;
@@ -958,7 +997,20 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
       if (srcReg) {
         if (srcReg.qi === null) {
           buf.value = srcReg.value;
-          console.log(`    Store value ready: ${srcReg.name} = ${buf.value}`);
+          // For SD from R registers, try to get the BigInt value
+          if (type === 'SD' && srcReg.type === 'INT') {
+            const regKey = `reg:${srcReg.name}`;
+            const bigIntVal = bigIntValues.get(regKey);
+            if (bigIntVal !== undefined) {
+              const bufKey = `buf:${buf.tag}`;
+              bigIntValues.set(bufKey, bigIntVal);
+              console.log(`    Store value ready: ${srcReg.name} = ${buf.value} (BigInt: 0x${bigIntVal.toString(16)})`);
+            } else {
+              console.log(`    Store value ready: ${srcReg.name} = ${buf.value}`);
+            }
+          } else {
+            console.log(`    Store value ready: ${srcReg.name} = ${buf.value}`);
+          }
         } else {
           buf.storeValueTag = srcReg.qi;
           console.log(`    Waiting for store value ${srcReg.name} from ${srcReg.qi}`);
@@ -1161,14 +1213,14 @@ function loadBlockIntoCache(
  * @param address - Starting memory address
  * @param type - Instruction type (L.S, L.D, etc.)
  * @param memory - Memory map
- * @returns The loaded value (sign-extended for single-precision)
+ * @returns Object with value and optional bigIntValue for LD instructions
  */
 function loadValueFromMemory(
   address: number,
   type: InstructionType | undefined,
   memory: Map<number, number>
-): number {
-  if (!type) return memory.get(address) || 0;
+): { value: number; bigIntValue?: bigint } {
+  if (!type) return { value: memory.get(address) || 0 };
   
   // Determine how many bytes to load
   const isDoublePrecision = type === 'LD' || type === 'L.D';
@@ -1206,13 +1258,21 @@ function loadValueFromMemory(
     const upperBigInt = BigInt(upperWord);
     const combined = lowerBigInt | (upperBigInt << 32n);
     
-    // Convert back to JavaScript number (as 64-bit float)
-    const value = Number(combined);
-    
     console.log(`    Double-precision: Lower=0x${lowerWord.toString(16).padStart(8, '0')}, Upper=0x${upperWord.toString(16).padStart(8, '0')}`);
-    console.log(`    Combined value: 0x${combined.toString(16).padStart(16, '0')} = ${value}`);
+    console.log(`    Combined BigInt value: 0x${combined.toString(16).padStart(16, '0')}`);
     
-    return value;
+    // For LD instructions, preserve exact 64-bit integer by returning both Number and BigInt
+    const value = Number(combined); // May lose precision but needed for compatibility
+    
+    console.log(`    Returning value: ${value} with BigInt: 0x${combined.toString(16)}`);
+    
+    // Return both the Number (for compatibility) and BigInt (for precision) for LD
+    if (type === 'LD') {
+      return { value, bigIntValue: combined };
+    } else {
+      // For L.D (floating point), just return the Number
+      return { value };
+    }
   } else {
     // For single-precision (32-bit), combine bytes normally
     let value = 0;
@@ -1229,7 +1289,7 @@ function loadValueFromMemory(
     }
     
     console.log(`    Single-precision value (sign-extended): ${value}`);
-    return value;
+    return { value };
   }
 }
 
@@ -1239,12 +1299,14 @@ function loadValueFromMemory(
  * @param value - Value to store
  * @param type - Instruction type (S.S, S.D, etc.)
  * @param memory - Memory map
+ * @param bigIntValue - Optional BigInt value for SD instructions (preserves precision)
  */
 function storeValueToMemory(
   address: number,
   value: number,
   type: InstructionType | undefined,
-  memory: Map<number, number>
+  memory: Map<number, number>,
+  bigIntValue?: bigint
 ): void {
   if (!type) {
     memory.set(address, value);
@@ -1255,20 +1317,42 @@ function storeValueToMemory(
   const isDoublePrecision = type === 'SD' || type === 'S.D';
   const numBytes = isDoublePrecision ? 8 : 4;
   
-  // For single-precision, mask to 32 bits (ignore sign extension)
-  let valueToStore = value;
-  if (!isDoublePrecision) {
-    valueToStore = value & 0xFFFFFFFF;
-  }
-  
-  console.log(`    Storing ${numBytes} bytes to address ${address}, value: ${valueToStore}`);
+  console.log(`    Storing ${numBytes} bytes to address ${address}, value: ${value}${bigIntValue ? ` (BigInt: 0x${bigIntValue.toString(16)})` : ''}`);
   
   // Store bytes to memory (little-endian: LSB at lowest address)
-  // For value 0x12345678 at address 20: M20=0x78, M21=0x56, M22=0x34, M23=0x12
-  for (let i = 0; i < numBytes; i++) {
-    const byte = (valueToStore >> (i * 8)) & 0xFF;
-    memory.set(address + i, byte);
-    console.log(`      M[${address + i}] = ${byte}`);
+  if (isDoublePrecision && type === 'SD' && bigIntValue !== undefined) {
+    // For SD with BigInt, use the exact BigInt value to preserve precision
+    for (let i = 0; i < 8; i++) {
+      const byte = Number((bigIntValue >> BigInt(i * 8)) & 0xFFn);
+      memory.set(address + i, byte);
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
+  } else if (isDoublePrecision) {
+    // For S.D (floating point double), use bit operations on the Number
+    // Split into two 32-bit words
+    const lowerWord = Math.trunc(value) & 0xFFFFFFFF;
+    const upperWord = Math.trunc(value / 0x100000000) & 0xFFFFFFFF;
+    
+    // Store lower 4 bytes
+    for (let i = 0; i < 4; i++) {
+      const byte = (lowerWord >> (i * 8)) & 0xFF;
+      memory.set(address + i, byte);
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
+    // Store upper 4 bytes
+    for (let i = 0; i < 4; i++) {
+      const byte = (upperWord >> (i * 8)) & 0xFF;
+      memory.set(address + 4 + i, byte);
+      console.log(`      M[${address + 4 + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
+  } else {
+    // For 32-bit stores (SW, S.S)
+    const valueToStore = Math.trunc(value) & 0xFFFFFFFF;
+    for (let i = 0; i < 4; i++) {
+      const byte = (valueToStore >> (i * 8)) & 0xFF;
+      memory.set(address + i, byte);
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
   }
 }
 
@@ -1318,4 +1402,14 @@ export function getInstructionLatency(type: InstructionType, config: SimulatorCo
     return config.latencies.STORE;
   }
   return 1;
+}
+
+// Helper function to get BigInt value for a register (for display purposes)
+export function getRegisterBigIntValue(registerName: string): bigint | undefined {
+  return bigIntValues.get(`reg:${registerName}`);
+}
+
+// Helper function to clear BigInt values (when simulation is reset)
+export function clearBigIntValues(): void {
+  bigIntValues.clear();
 }

@@ -10,7 +10,7 @@ import { RegisterFileTable } from "@/components/simulator/RegisterFileTable";
 import { LoadStoreBufferTable } from "@/components/simulator/LoadStoreBufferTable";
 import { MemoryTable } from "@/components/simulator/MemoryTable";
 import { CacheTable } from "@/components/simulator/CacheTable";
-import { parseInstructions, initializeSimulatorState, executeSimulationStep } from "@/lib/tomasuloEngine";
+import { parseInstructions, initializeSimulatorState, executeSimulationStep, clearBigIntValues } from "@/lib/tomasuloEngine";
 import { useToast } from "@/hooks/use-toast";
 
 const defaultConfig: SimulatorConfig = {
@@ -107,6 +107,7 @@ const Index = () => {
 
   const handleReset = () => {
     setState(null);
+    clearBigIntValues();
     toast({
       title: "Simulator Reset",
       description: "All state has been cleared.",
