@@ -1449,11 +1449,21 @@ function storeValueToMemory(
     }
   } else if (type === 'S.S') {
     // S.S: Store 4 bytes as IEEE 754 SINGLE-PRECISION FLOAT
-    // Value is stored as raw 32-bit pattern (from L.S)
-    const rawBits = Math.trunc(value) >>> 0; // Treat value as 32-bit unsigned integer
+    const buffer = new ArrayBuffer(4);
+    const view = new DataView(buffer);
+    
+    // Check if value is a raw 32-bit pattern (from L.S) or actual float
+    // If it's within 32-bit unsigned range and is an integer, treat as raw bits
+    if (Number.isInteger(value) && value >= 0 && value <= 0xFFFFFFFF) {
+      // Raw 32-bit pattern from L.S - store as-is
+      view.setUint32(0, value, true);
+    } else {
+      // Actual float value - convert to single-precision
+      view.setFloat32(0, value, true);
+    }
     
     for (let i = 0; i < 4; i++) {
-      const byte = (rawBits >> (i * 8)) & 0xFF;
+      const byte = view.getUint8(i);
       memory.set(address + i, byte);
       if (memoryWrites && cycle !== undefined) {
         memoryWrites.set(address + i, { value: byte, cycle });
