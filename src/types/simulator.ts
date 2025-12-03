@@ -54,7 +54,7 @@ export interface LoadStoreBuffer {
   instructionId?: number; // Track which instruction occupies this buffer
   baseRegisterTag: string | null; // Tag of RS producing base register value
   storeValueTag: string | null; // For stores: tag of RS producing value to store
-  stage: 'ADDRESS_CALC' | 'MEMORY_ACCESS' | 'COMPLETED'; // Execution stage
+  stage: 'ADDRESS_CALC' | 'EXECUTING' | 'MEMORY_ACCESS' | 'CACHE_ACCESS' | 'WRITE_BACK' | 'COMPLETED'; // Execution stage
 }
 
 export interface CacheBlock {

@@ -817,8 +817,8 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
     
     const inst = state.instructions.find(i => i.id === buf.instructionId);
     
-    // STAGE 1: Address Calculation
-    if (buf.stage === 'ADDRESS_CALC') {
+    // STAGE 1: EXECUTING (Store Latency - address calc + operand ready)
+    if (buf.stage === 'EXECUTING') {
       // Wait for base register if needed
       if (buf.baseRegisterTag !== null) {
         console.log(`  ${buf.tag} waiting for base register from ${buf.baseRegisterTag}`);
@@ -831,76 +831,122 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         return;
       }
       
-      // Address and value are ready, move to memory access
+      // Operands ready, execute for store latency cycles
       if (buf.address !== null && buf.value !== null) {
-        console.log(`  ${buf.tag} address calculated: ${buf.address}, value: ${buf.value}`);
-        
-        // Check for memory conflicts with older loads/stores
-        if (checkMemoryConflicts(buf, state.loadStoreBuffers.load, state.instructions, false)) {
-          console.log(`  ${buf.tag} blocked by memory conflict (WAR/WAW hazard)`);
-          return;
+        if (buf.timeRemaining > 0) {
+          // Set exec start cycle on first execution
+          if (inst && inst.execStartCycle === undefined) {
+            inst.execStartCycle = state.cycle;
+          }
+          
+          buf.timeRemaining--;
+          console.log(`  ${buf.tag} executing (store latency): ${buf.timeRemaining} cycles remaining`);
         }
         
-        if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, false)) {
-          console.log(`  ${buf.tag} blocked by memory conflict (WAW hazard)`);
-          return;
+        if (buf.timeRemaining === 0) {
+          // Execution complete, move to cache access
+          console.log(`  ${buf.tag} execution complete, address: ${buf.address}, value: ${buf.value}`);
+          
+          // Check for memory conflicts
+          if (checkMemoryConflicts(buf, state.loadStoreBuffers.load, state.instructions, false)) {
+            console.log(`  ${buf.tag} blocked by memory conflict (WAR hazard)`);
+            buf.timeRemaining = 1; // Wait one more cycle
+            return;
+          }
+          
+          if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, false)) {
+            console.log(`  ${buf.tag} blocked by memory conflict (WAW hazard)`);
+            buf.timeRemaining = 1; // Wait one more cycle
+            return;
+          }
+          
+          // Start cache access (miss penalty + hit latency, or just hit latency)
+          const { latency, hit } = accessCache(buf.address, config, state, getStoreSize(inst?.type));
+          (buf as any).cacheHit = hit;
+          
+          if (!hit) {
+            // Cache MISS: miss penalty + hit latency
+            buf.timeRemaining = config.cache.missLatency + config.cache.hitLatency;
+            (buf as any).cyclesUntilBlockLoaded = config.cache.missLatency;
+            buf.stage = 'CACHE_ACCESS';
+            console.log(`  ${buf.tag} starting cache access (MISS): ${config.cache.missLatency} cycles miss penalty + ${config.cache.hitLatency} cycle hit latency`);
+          } else {
+            // Cache HIT: just hit latency
+            buf.timeRemaining = config.cache.hitLatency;
+            buf.stage = 'CACHE_ACCESS';
+            console.log(`  ${buf.tag} starting cache access (HIT): ${config.cache.hitLatency} cycles hit latency`);
+          }
+          
+          if (inst && inst.execEndCycle === undefined) {
+            inst.execEndCycle = state.cycle;
+          }
         }
-        
-        // Start cache access
-        const { latency, hit } = accessCache(buf.address, config, state, getStoreSize(inst?.type));
-        buf.timeRemaining = latency;
-        buf.stage = 'MEMORY_ACCESS';
-        
-        if (inst && inst.execStartCycle === undefined) {
-          inst.execStartCycle = state.cycle;
-        }
-        
-        console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
-        // Don't decrement in the same cycle we start - return here
         return;
       }
     }
     
-    // STAGE 2: Memory Access
-    if (buf.stage === 'MEMORY_ACCESS' && buf.timeRemaining > 0) {
-      buf.timeRemaining--;
-      console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
+    // STAGE 2: CACHE_ACCESS (Miss penalty or hit latency)
+    if (buf.stage === 'CACHE_ACCESS') {
+      const wasCacheHit = (buf as any).cacheHit;
+      let cyclesUntilBlockLoaded = (buf as any).cyclesUntilBlockLoaded;
       
-      if (buf.timeRemaining === 0 && buf.address !== null && buf.value !== null) {
-        // Store completes - write to memory with proper byte ordering
-        const bufKey = `buf:${buf.tag}`;
-        const bigIntVal = bigIntValues.get(bufKey);
-        storeValueToMemory(buf.address, buf.value, inst?.type, state.memory, bigIntVal, state.memoryWrites, state.cycle);
+      // For cache miss, load block into cache after miss penalty
+      if (!wasCacheHit && cyclesUntilBlockLoaded !== undefined) {
+        cyclesUntilBlockLoaded--;
+        (buf as any).cyclesUntilBlockLoaded = cyclesUntilBlockLoaded;
         
-        // Update cache with new value (using same block calculation as accessCache)
-        const blockSize = config.cache.blockSize;
-        const cacheSize = config.cache.cacheSize;
-        const numCacheBlocks = cacheSize / blockSize;
-        const memoryBlockNum = Math.floor(buf.address / blockSize);
-        const cacheIndex = memoryBlockNum % numCacheBlocks;
-        
-        const cacheBlock = state.cache.get(cacheIndex);
-        if (cacheBlock && cacheBlock.valid && cacheBlock.tag === memoryBlockNum) {
-          // Update all bytes in cache that were written
-          const numBytes = getStoreSize(inst?.type);
-          for (let i = 0; i < numBytes; i++) {
-            const offsetInBlock = (buf.address + i) % blockSize;
-            const byte = (buf.value >> (i * 8)) & 0xFF;
-            cacheBlock.data[offsetInBlock] = byte;
-          }
-          console.log(`    Updated cache block ${cacheIndex} with ${numBytes} bytes`);
+        if (cyclesUntilBlockLoaded === 0 && buf.address !== null) {
+          // Miss penalty complete - load OLD block into cache
+          loadBlockIntoCache(buf.address, config, state);
+          console.log(`  ${buf.tag} cache miss penalty complete, block loaded`);
         }
-        
-        buf.stage = 'COMPLETED';
-        buf.busy = false;
-        
-        if (inst) {
-          inst.execEndCycle = state.cycle;
-          inst.writeResultCycle = state.cycle; // Stores complete without CDB
-        }
-        
-        console.log(`  ${buf.tag} stored value ${buf.value} to address ${buf.address}`);
       }
+      
+      buf.timeRemaining--;
+      console.log(`  ${buf.tag} cache access: ${buf.timeRemaining} cycles remaining`);
+      
+      if (buf.timeRemaining === 0) {
+        // Cache access complete, now write to memory and update cache
+        buf.stage = 'WRITE_BACK';
+        console.log(`  ${buf.tag} cache access complete, ready to write back`);
+      }
+      return;
+    }
+    
+    // STAGE 3: WRITE_BACK (Write to memory and update cache)
+    if (buf.stage === 'WRITE_BACK' && buf.address !== null && buf.value !== null) {
+      // Write to memory
+      const bufKey = `buf:${buf.tag}`;
+      const bigIntVal = bigIntValues.get(bufKey);
+      storeValueToMemory(buf.address, buf.value, inst?.type, state.memory, bigIntVal, state.memoryWrites, state.cycle);
+      
+      // Update cache with new value
+      const blockSize = config.cache.blockSize;
+      const cacheSize = config.cache.cacheSize;
+      const numCacheBlocks = cacheSize / blockSize;
+      const memoryBlockNum = Math.floor(buf.address / blockSize);
+      const cacheIndex = memoryBlockNum % numCacheBlocks;
+      
+      const cacheBlock = state.cache.get(cacheIndex);
+      if (cacheBlock && cacheBlock.valid && cacheBlock.tag === memoryBlockNum) {
+        // Update all bytes in cache that were written
+        const numBytes = getStoreSize(inst?.type);
+        for (let i = 0; i < numBytes; i++) {
+          const offsetInBlock = (buf.address + i) % blockSize;
+          const memValue = state.memory.get(buf.address + i) || 0;
+          cacheBlock.data[offsetInBlock] = memValue;
+        }
+        console.log(`  ${buf.tag} updated cache block ${cacheIndex} with ${numBytes} bytes`);
+      }
+      
+      buf.stage = 'COMPLETED';
+      buf.busy = false;
+      
+      if (inst) {
+        inst.writeResultCycle = state.cycle; // Stores complete at write-back
+      }
+      
+      console.log(`  ${buf.tag} stored value ${buf.value} to address ${buf.address}`);
     }
   });
 }
@@ -978,8 +1024,11 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
         buf.timeRemaining = getInstructionLatency(type as InstructionType, config);
       }
     } else {
-      // STORE: Calculate address immediately (stores work differently)
-      buf.timeRemaining = 0;
+      // STORE: Will execute for store latency cycles before cache access
+      const storeLatency = getInstructionLatency(type as InstructionType, config);
+      buf.timeRemaining = storeLatency;
+      buf.stage = 'EXECUTING';
+      
       if (baseReg) {
         if (baseReg.qi === null) {
           buf.address = baseReg.value + offset;
@@ -991,6 +1040,8 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
       } else {
         buf.address = offset;
       }
+      
+      console.log(`    Store will execute for ${storeLatency} cycles before cache access`);
     }
     
     if (type.startsWith('S')) {
