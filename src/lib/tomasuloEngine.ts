@@ -1236,60 +1236,84 @@ function loadValueFromMemory(
   console.log(`    Loading ${numBytes} bytes from address ${address}: [${bytes.join(', ')}]`);
   
   if (isDoublePrecision) {
-    // For double-precision (64-bit), use BigInt to avoid 32-bit truncation
-    // Read lower 32-bit word (bytes 0-3)
-    let lowerWord = 0;
-    for (let i = 0; i < 4; i++) {
-      lowerWord |= (bytes[i] & 0xFF) << (i * 8);
-    }
-    // Ensure it's treated as unsigned 32-bit
-    lowerWord = lowerWord >>> 0;
-    
-    // Read upper 32-bit word (bytes 4-7)
-    let upperWord = 0;
-    for (let i = 0; i < 4; i++) {
-      upperWord |= (bytes[4 + i] & 0xFF) << (i * 8);
-    }
-    // Ensure it's treated as unsigned 32-bit
-    upperWord = upperWord >>> 0;
-    
-    // Combine using BigInt: FinalResult = BigInt(LowerWord) | (BigInt(UpperWord) << 32n)
-    const lowerBigInt = BigInt(lowerWord);
-    const upperBigInt = BigInt(upperWord);
-    const combined = lowerBigInt | (upperBigInt << 32n);
-    
-    console.log(`    Double-precision: Lower=0x${lowerWord.toString(16).padStart(8, '0')}, Upper=0x${upperWord.toString(16).padStart(8, '0')}`);
-    console.log(`    Combined BigInt value: 0x${combined.toString(16).padStart(16, '0')}`);
-    
-    // For LD instructions, preserve exact 64-bit integer by returning both Number and BigInt
-    const value = Number(combined); // May lose precision but needed for compatibility
-    
-    console.log(`    Returning value: ${value} with BigInt: 0x${combined.toString(16)}`);
-    
-    // Return both the Number (for compatibility) and BigInt (for precision) for LD
     if (type === 'LD') {
+      // LD: Load 8 bytes as 64-bit INTEGER (not floating point)
+      // Read lower 32-bit word (bytes 0-3)
+      let lowerWord = 0;
+      for (let i = 0; i < 4; i++) {
+        lowerWord |= (bytes[i] & 0xFF) << (i * 8);
+      }
+      lowerWord = lowerWord >>> 0; // Unsigned 32-bit
+      
+      // Read upper 32-bit word (bytes 4-7)
+      let upperWord = 0;
+      for (let i = 0; i < 4; i++) {
+        upperWord |= (bytes[4 + i] & 0xFF) << (i * 8);
+      }
+      upperWord = upperWord >>> 0; // Unsigned 32-bit
+      
+      // Combine using BigInt for 64-bit integer precision
+      const lowerBigInt = BigInt(lowerWord);
+      const upperBigInt = BigInt(upperWord);
+      const combined = lowerBigInt | (upperBigInt << 32n);
+      
+      console.log(`    LD (64-bit integer): Lower=0x${lowerWord.toString(16).padStart(8, '0')}, Upper=0x${upperWord.toString(16).padStart(8, '0')}`);
+      console.log(`    Combined BigInt value: 0x${combined.toString(16).padStart(16, '0')}`);
+      
+      const value = Number(combined); // May lose precision but needed for compatibility
+      console.log(`    Returning value: ${value} with BigInt: 0x${combined.toString(16)}`);
+      
       return { value, bigIntValue: combined };
     } else {
-      // For L.D (floating point), just return the Number
+      // L.D: Load 8 bytes as IEEE 754 DOUBLE-PRECISION FLOAT
+      // Create DataView to interpret bytes as double-precision float
+      const buffer = new ArrayBuffer(8);
+      const view = new DataView(buffer);
+      
+      // Write bytes in little-endian order
+      for (let i = 0; i < 8; i++) {
+        view.setUint8(i, bytes[i]);
+      }
+      
+      // Read as double-precision float (little-endian)
+      const value = view.getFloat64(0, true);
+      
+      console.log(`    L.D (double-precision float): ${value}`);
       return { value };
     }
   } else {
-    // For single-precision (32-bit), combine bytes normally
-    let value = 0;
-    for (let i = 0; i < 4; i++) {
-      value |= (bytes[i] & 0xFF) << (i * 8);
-    }
-    
-    // Check if the MSB (bit 31) is set for sign extension
-    const isNegative = (value & 0x80000000) !== 0;
-    if (isNegative) {
-      // Sign extend to 64-bit by filling upper 32 bits with 1s
-      // Convert to signed 32-bit integer first
+    if (type === 'LW') {
+      // LW: Load 4 bytes as 32-bit INTEGER with sign extension
+      let value = 0;
+      for (let i = 0; i < 4; i++) {
+        value |= (bytes[i] & 0xFF) << (i * 8);
+      }
+      
+      // Sign extend to 64-bit
       value = value | 0; // Force to signed 32-bit
+      
+      console.log(`    LW (32-bit signed integer): ${value}`);
+      return { value };
+    } else {
+      // L.S: Load 4 bytes as IEEE 754 SINGLE-PRECISION FLOAT (32-bit)
+      // Store the raw 32-bit pattern as an integer to preserve single-precision format
+      let rawBits = 0;
+      for (let i = 0; i < 4; i++) {
+        rawBits |= (bytes[i] & 0xFF) << (i * 8);
+      }
+      rawBits = rawBits >>> 0; // Ensure unsigned 32-bit
+      
+      // For display purposes, also show the float value
+      const buffer = new ArrayBuffer(4);
+      const view = new DataView(buffer);
+      view.setUint32(0, rawBits, true);
+      const floatValue = view.getFloat32(0, true);
+      
+      console.log(`    L.S (single-precision float): ${floatValue} (raw bits: 0x${rawBits.toString(16).padStart(8, '0')})`);
+      
+      // Store the raw 32-bit pattern as the value (preserves single-precision)
+      return { value: rawBits };
     }
-    
-    console.log(`    Single-precision value (sign-extended): ${value}`);
-    return { value };
   }
 }
 
@@ -1320,33 +1344,54 @@ function storeValueToMemory(
   console.log(`    Storing ${numBytes} bytes to address ${address}, value: ${value}${bigIntValue ? ` (BigInt: 0x${bigIntValue.toString(16)})` : ''}`);
   
   // Store bytes to memory (little-endian: LSB at lowest address)
-  if (isDoublePrecision && type === 'SD' && bigIntValue !== undefined) {
-    // For SD with BigInt, use the exact BigInt value to preserve precision
-    for (let i = 0; i < 8; i++) {
-      const byte = Number((bigIntValue >> BigInt(i * 8)) & 0xFFn);
-      memory.set(address + i, byte);
-      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+  if (type === 'SD') {
+    // SD: Store 8 bytes as 64-bit INTEGER
+    if (bigIntValue !== undefined) {
+      // Use BigInt for exact precision
+      for (let i = 0; i < 8; i++) {
+        const byte = Number((bigIntValue >> BigInt(i * 8)) & 0xFFn);
+        memory.set(address + i, byte);
+        console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+      }
+    } else {
+      // Fallback to Number (may lose precision)
+      for (let i = 0; i < 8; i++) {
+        const byte = Math.floor(value / Math.pow(2, i * 8)) & 0xFF;
+        memory.set(address + i, byte);
+        console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+      }
     }
-  } else if (isDoublePrecision) {
-    // For S.D (floating point double), use bit operations on the Number
-    // Split into two 32-bit words
-    const lowerWord = Math.trunc(value) & 0xFFFFFFFF;
-    const upperWord = Math.trunc(value / 0x100000000) & 0xFFFFFFFF;
+  } else if (type === 'S.D') {
+    // S.D: Store 8 bytes as IEEE 754 DOUBLE-PRECISION FLOAT
+    const buffer = new ArrayBuffer(8);
+    const view = new DataView(buffer);
+    view.setFloat64(0, value, true); // true = little-endian
     
-    // Store lower 4 bytes
-    for (let i = 0; i < 4; i++) {
-      const byte = (lowerWord >> (i * 8)) & 0xFF;
+    for (let i = 0; i < 8; i++) {
+      const byte = view.getUint8(i);
       memory.set(address + i, byte);
       console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
     }
-    // Store upper 4 bytes
+  } else if (type === 'SW') {
+    // SW: Store 4 bytes as 32-bit INTEGER
+    const valueToStore = Math.trunc(value) & 0xFFFFFFFF;
     for (let i = 0; i < 4; i++) {
-      const byte = (upperWord >> (i * 8)) & 0xFF;
-      memory.set(address + 4 + i, byte);
-      console.log(`      M[${address + 4 + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+      const byte = (valueToStore >> (i * 8)) & 0xFF;
+      memory.set(address + i, byte);
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
+  } else if (type === 'S.S') {
+    // S.S: Store 4 bytes as IEEE 754 SINGLE-PRECISION FLOAT
+    // Value is stored as raw 32-bit pattern (from L.S)
+    const rawBits = Math.trunc(value) >>> 0; // Treat value as 32-bit unsigned integer
+    
+    for (let i = 0; i < 4; i++) {
+      const byte = (rawBits >> (i * 8)) & 0xFF;
+      memory.set(address + i, byte);
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
     }
   } else {
-    // For 32-bit stores (SW, S.S)
+    // Default: store as 4-byte integer
     const valueToStore = Math.trunc(value) & 0xFFFFFFFF;
     for (let i = 0; i < 4; i++) {
       const byte = (valueToStore >> (i * 8)) & 0xFF;
