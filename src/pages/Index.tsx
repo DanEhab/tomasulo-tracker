@@ -135,7 +135,9 @@ const Index = () => {
     if (!state || state.cycle > 0) return;
     
     const newState = { ...state };
-    newState.memory.set(address, newValue);
+    // Ensure value is within byte range (0-255)
+    const byteValue = Math.max(0, Math.min(255, Math.floor(newValue))) & 0xFF;
+    newState.memory.set(address, byteValue);
     setState(newState);
   };
 
@@ -151,7 +153,9 @@ const Index = () => {
     if (!state || state.cycle > 0) return;
     
     const newState = { ...state };
-    newState.memory.set(address, value);
+    // Ensure value is within byte range (0-255)
+    const byteValue = Math.max(0, Math.min(255, Math.floor(value))) & 0xFF;
+    newState.memory.set(address, byteValue);
     setState(newState);
   };
 

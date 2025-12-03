@@ -3,7 +3,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, Info } from "lucide-react";
+import { MemoryByteInput } from "./MemoryByteInput";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface MemoryTableProps {
   memory: Map<number, number>;
@@ -15,73 +18,112 @@ interface MemoryTableProps {
 
 export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete, onMemoryAdd }: MemoryTableProps) => {
   const [newAddress, setNewAddress] = useState<string>("");
-  const [newValue, setNewValue] = useState<string>("");
+  const [newValue, setNewValue] = useState<number>(0);
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [editingAddress, setEditingAddress] = useState<number | null>(null);
 
   // Convert Map to sorted array
   const memoryEntries = Array.from(memory.entries()).sort((a, b) => a[0] - b[0]);
 
-  const handleValueChange = (address: number, inputValue: string) => {
+  const handleValueChange = (address: number, value: number) => {
     if (!onMemoryChange) return;
-    
-    const value = parseFloat(inputValue);
-    if (!isNaN(value)) {
-      onMemoryChange(address, value);
-    } else if (inputValue === '' || inputValue === '-') {
-      onMemoryChange(address, 0);
-    }
+    onMemoryChange(address, value);
   };
 
   const handleAddMemory = () => {
     if (!onMemoryAdd) return;
     
     const address = parseInt(newAddress);
-    const value = parseFloat(newValue);
     
-    if (!isNaN(address) && !isNaN(value)) {
-      onMemoryAdd(address, value);
+    if (!isNaN(address) && address >= 0) {
+      onMemoryAdd(address, newValue);
       setNewAddress("");
-      setNewValue("");
+      setNewValue(0);
+      setIsAddDialogOpen(false);
     }
   };
 
   return (
     <Card className="bg-card border-border">
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-semibold text-primary">Memory</CardTitle>
+        <CardTitle className="text-sm font-semibold text-primary flex items-center gap-2">
+          Memory
+          <span className="text-[10px] font-normal text-muted-foreground">(Byte-Addressable)</span>
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
+          {/* Information banner */}
+          <Alert className="bg-blue-500/10 border-blue-500/30">
+            <Info className="h-4 w-4 text-blue-500" />
+            <AlertDescription className="text-xs text-muted-foreground">
+              <strong>Memory is byte-addressable:</strong> Each address stores exactly <strong>1 byte (8 bits)</strong> of data.
+              Values range from <span className="font-mono">0x00</span> to <span className="font-mono">0xFF</span> (0-255 decimal).
+            </AlertDescription>
+          </Alert>
+
           {/* Add new memory entry (only when editable) */}
           {isEditable && (
-            <div className="flex gap-2 p-3 bg-secondary/50 rounded-md border border-border">
-              <Input
-                type="number"
-                placeholder="Address"
-                value={newAddress}
-                onChange={(e) => setNewAddress(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === '.' || e.key === ',') e.preventDefault();
-                }}
-                className="h-8 text-xs font-mono bg-input border-border"
-              />
-              <Input
-                type="number"
-                step="0.1"
-                placeholder="Value"
-                value={newValue}
-                onChange={(e) => setNewValue(e.target.value)}
-                className="h-8 text-xs font-mono bg-input border-border"
-              />
-              <Button
-                onClick={handleAddMemory}
-                size="sm"
-                className="h-8 px-3"
-                disabled={!newAddress || !newValue}
-              >
-                <Plus className="w-4 h-4 mr-1" />
-                Add
-              </Button>
-            </div>
+            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+              <DialogTrigger asChild>
+                <Button size="sm" className="w-full">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Memory Location
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Add Memory Location</DialogTitle>
+                  <DialogDescription className="text-xs">
+                    Set the value for a single byte at a specific memory address.
+                    You can input in binary or hexadecimal format.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Memory Address</label>
+                    <Input
+                      type="number"
+                      placeholder="e.g., 20"
+                      value={newAddress}
+                      onChange={(e) => setNewAddress(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === '.' || e.key === ',') e.preventDefault();
+                      }}
+                      className="font-mono"
+                      min="0"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Enter the decimal address (e.g., 20 for address 0x14)
+                    </p>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Byte Value (0-255)</label>
+                    <MemoryByteInput
+                      value={newValue}
+                      onChange={setNewValue}
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button 
+                    onClick={handleAddMemory} 
+                    className="flex-1"
+                    disabled={!newAddress || newAddress === '' || parseInt(newAddress) < 0}
+                  >
+                    Add to Memory
+                  </Button>
+                  <Button 
+                    onClick={() => setIsAddDialogOpen(false)} 
+                    variant="outline"
+                    className="flex-1"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
           )}
 
           {/* Memory entries table */}
@@ -111,17 +153,44 @@ export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete
                         0x{address.toString(16).toUpperCase().padStart(4, '0')}
                         <span className="text-muted-foreground ml-2">({address})</span>
                       </TableCell>
-                      <TableCell className="text-xs text-center font-mono px-1">
+                      <TableCell className="text-xs text-center font-mono px-2">
                         {isEditable ? (
-                          <Input
-                            type="number"
-                            step="0.1"
-                            value={value}
-                            onChange={(e) => handleValueChange(address, e.target.value)}
-                            className="h-7 text-xs text-center font-mono bg-input border-border"
-                          />
+                          <Dialog open={editingAddress === address} onOpenChange={(open) => setEditingAddress(open ? address : null)}>
+                            <DialogTrigger asChild>
+                              <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="h-7 font-mono text-xs w-full hover:bg-primary/5"
+                              >
+                                0x{(value & 0xFF).toString(16).toUpperCase().padStart(2, '0')}
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent className="sm:max-w-md">
+                              <DialogHeader>
+                                <DialogTitle>Edit Memory Location</DialogTitle>
+                                <DialogDescription className="text-xs">
+                                  Address: <span className="font-mono font-semibold">0x{address.toString(16).toUpperCase().padStart(4, '0')}</span> ({address} decimal)
+                                </DialogDescription>
+                              </DialogHeader>
+                              <div className="space-y-4 py-4">
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium">Byte Value (0-255)</label>
+                                  <MemoryByteInput
+                                    value={value & 0xFF}
+                                    onChange={(newVal) => handleValueChange(address, newVal)}
+                                  />
+                                </div>
+                              </div>
+                              <Button onClick={() => setEditingAddress(null)} className="w-full">
+                                Done
+                              </Button>
+                            </DialogContent>
+                          </Dialog>
                         ) : (
-                          <span>{value.toFixed(2)}</span>
+                          <span className="font-semibold">
+                            0x{(value & 0xFF).toString(16).toUpperCase().padStart(2, '0')}
+                            <span className="text-muted-foreground ml-2">({value & 0xFF})</span>
+                          </span>
                         )}
                       </TableCell>
                       {isEditable && (
