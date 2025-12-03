@@ -10,6 +10,7 @@ import { RegisterFileTable } from "@/components/simulator/RegisterFileTable";
 import { LoadStoreBufferTable } from "@/components/simulator/LoadStoreBufferTable";
 import { MemoryTable } from "@/components/simulator/MemoryTable";
 import { CacheTable } from "@/components/simulator/CacheTable";
+import { MemoryWritesTable } from "@/components/simulator/MemoryWritesTable";
 import { parseInstructions, initializeSimulatorState, executeSimulationStep, clearBigIntValues } from "@/lib/tomasuloEngine";
 import { useToast } from "@/hooks/use-toast";
 
@@ -299,6 +300,12 @@ const Index = () => {
                     cacheSize={config.cache.cacheSize}
                   />
                 </div>
+
+                {state.isComplete && state.memoryWrites && state.memoryWrites.size > 0 && (
+                  <div className="mt-4">
+                    <MemoryWritesTable memoryWrites={state.memoryWrites} />
+                  </div>
+                )}
               </>
             ) : (
               <div className="flex items-center justify-center py-32 border border-border border-dashed rounded-lg bg-card/50">

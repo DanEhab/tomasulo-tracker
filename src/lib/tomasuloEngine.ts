@@ -288,6 +288,7 @@ export function initializeSimulatorState(
     cache: new Map(),
     isRunning: false,
     isComplete: false,
+    memoryWrites: new Map(),
   };
 
   // Apply optional initial registers
@@ -321,6 +322,7 @@ export function executeSimulationStep(
   // Restore Map objects (JSON.stringify converts Maps to empty objects)
   newState.memory = new Map(state.memory);
   newState.cache = new Map(state.cache);
+  newState.memoryWrites = new Map(state.memoryWrites || new Map());
   
   newState.cycle = state.cycle + 1;
   
@@ -868,7 +870,7 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         // Store completes - write to memory with proper byte ordering
         const bufKey = `buf:${buf.tag}`;
         const bigIntVal = bigIntValues.get(bufKey);
-        storeValueToMemory(buf.address, buf.value, inst?.type, state.memory, bigIntVal);
+        storeValueToMemory(buf.address, buf.value, inst?.type, state.memory, bigIntVal, state.memoryWrites, state.cycle);
         
         // Update cache with new value (using same block calculation as accessCache)
         const blockSize = config.cache.blockSize;
@@ -1330,7 +1332,9 @@ function storeValueToMemory(
   value: number,
   type: InstructionType | undefined,
   memory: Map<number, number>,
-  bigIntValue?: bigint
+  bigIntValue?: bigint,
+  memoryWrites?: Map<number, { value: number; cycle: number }>,
+  cycle?: number
 ): void {
   if (!type) {
     memory.set(address, value);
@@ -1351,6 +1355,9 @@ function storeValueToMemory(
       for (let i = 0; i < 8; i++) {
         const byte = Number((bigIntValue >> BigInt(i * 8)) & 0xFFn);
         memory.set(address + i, byte);
+        if (memoryWrites && cycle !== undefined) {
+          memoryWrites.set(address + i, { value: byte, cycle });
+        }
         console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
       }
     } else {
@@ -1358,6 +1365,9 @@ function storeValueToMemory(
       for (let i = 0; i < 8; i++) {
         const byte = Math.floor(value / Math.pow(2, i * 8)) & 0xFF;
         memory.set(address + i, byte);
+        if (memoryWrites && cycle !== undefined) {
+          memoryWrites.set(address + i, { value: byte, cycle });
+        }
         console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
       }
     }
@@ -1370,6 +1380,9 @@ function storeValueToMemory(
     for (let i = 0; i < 8; i++) {
       const byte = view.getUint8(i);
       memory.set(address + i, byte);
+      if (memoryWrites && cycle !== undefined) {
+        memoryWrites.set(address + i, { value: byte, cycle });
+      }
       console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
     }
   } else if (type === 'SW') {
@@ -1378,6 +1391,9 @@ function storeValueToMemory(
     for (let i = 0; i < 4; i++) {
       const byte = (valueToStore >> (i * 8)) & 0xFF;
       memory.set(address + i, byte);
+      if (memoryWrites && cycle !== undefined) {
+        memoryWrites.set(address + i, { value: byte, cycle });
+      }
       console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
     }
   } else if (type === 'S.S') {
@@ -1388,6 +1404,9 @@ function storeValueToMemory(
     for (let i = 0; i < 4; i++) {
       const byte = (rawBits >> (i * 8)) & 0xFF;
       memory.set(address + i, byte);
+      if (memoryWrites && cycle !== undefined) {
+        memoryWrites.set(address + i, { value: byte, cycle });
+      }
       console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
     }
   } else {
@@ -1396,6 +1415,9 @@ function storeValueToMemory(
     for (let i = 0; i < 4; i++) {
       const byte = (valueToStore >> (i * 8)) & 0xFF;
       memory.set(address + i, byte);
+      if (memoryWrites && cycle !== undefined) {
+        memoryWrites.set(address + i, { value: byte, cycle });
+      }
       console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
     }
   }

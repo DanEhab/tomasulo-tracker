@@ -114,4 +114,5 @@ export interface SimulatorState {
   cache: Map<number, CacheBlock>;
   isRunning: boolean;
   isComplete: boolean;
+  memoryWrites?: Map<number, { value: number; cycle: number }>; // Track store instruction writes
 }
