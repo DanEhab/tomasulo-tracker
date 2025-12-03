@@ -37,6 +37,9 @@ export function parseInstructions(code: string): Instruction[] {
       dest = parts[1];
       immediate = parseFloat(parts[2]) || 0;
       src1 = parts[3];
+      
+      // Validate load instruction format and register types
+      validateLoadStoreInstruction(type, dest, src1, line, index);
     } else if (type === 'DADDI' || type === 'DSUBI') {
       // Immediate: DADDI R1, R2, 100 -> dest=R1, src1=R2, immediate=100
       dest = parts[1];
@@ -76,6 +79,111 @@ export function parseInstructions(code: string): Instruction[] {
   }
   
   return instructions;
+}
+
+/**
+ * Validate load/store instruction format and register types
+ */
+function validateLoadStoreInstruction(
+  type: InstructionType,
+  dest: string | undefined,
+  src1: string | undefined,
+  line: string,
+  lineIndex: number
+): void {
+  const lineNum = lineIndex + 1;
+  
+  if (!dest) {
+    throw new Error(`Line ${lineNum}: Missing destination register in instruction:\n"${line}"\n\nExpected format: ${type} <dest>, <offset>(<base_reg>)`);
+  }
+  
+  if (!src1) {
+    throw new Error(`Line ${lineNum}: Missing base register in instruction:\n"${line}"\n\nExpected format: ${type} <dest>, <offset>(<base_reg>)`);
+  }
+  
+  const destUpper = dest.toUpperCase();
+  const src1Upper = src1.toUpperCase();
+  
+  // Check if registers are properly formatted
+  const isDestR = /^R([0-9]|[1-2][0-9]|3[0-1])$/.test(destUpper);
+  const isDestF = /^F([0-9]|[1-2][0-9]|3[0-1])$/.test(destUpper);
+  const isSrc1R = /^R([0-9]|[1-2][0-9]|3[0-1])$/.test(src1Upper);
+  
+  // Validate base register (must always be R0-R31)
+  if (!isSrc1R) {
+    throw new Error(
+      `Line ${lineNum}: Invalid base register "${src1}" in instruction:\n"${line}"\n\n` +
+      `Base register must be an integer register R0-R31.\n` +
+      `Expected format: ${type} <dest>, <offset>(R0-R31)`
+    );
+  }
+  
+  // Validate LW and LD instructions
+  if (type === 'LW' || type === 'LD') {
+    // Must use R registers (R1-R31, not R0) as destination
+    if (!isDestR) {
+      throw new Error(
+        `Line ${lineNum}: Invalid destination register "${dest}" for ${type} instruction:\n"${line}"\n\n` +
+        `${type} loads integers and must write to an integer register (R1-R31).\n` +
+        `You cannot use floating-point registers (F0-F31) with ${type}.\n\n` +
+        `Correct format: ${type} R1-R31, <offset>(R0-R31)\n` +
+        `Example: ${type} R5, 20(R0)`
+      );
+    }
+    
+    // Cannot write to R0
+    if (destUpper === 'R0') {
+      throw new Error(
+        `Line ${lineNum}: Cannot write to R0 in instruction:\n"${line}"\n\n` +
+        `R0 is a constant register that always contains 0.\n` +
+        `Use R1-R31 as the destination.\n\n` +
+        `Correct format: ${type} R1-R31, <offset>(R0-R31)\n` +
+        `Example: ${type} R5, 20(R0)`
+      );
+    }
+  }
+  
+  // Validate L.S and L.D instructions
+  if (type === 'L.S' || type === 'L.D') {
+    // Must use F registers (F0-F31) as destination
+    if (!isDestF) {
+      throw new Error(
+        `Line ${lineNum}: Invalid destination register "${dest}" for ${type} instruction:\n"${line}"\n\n` +
+        `${type} loads floating-point values and must write to a floating-point register (F0-F31).\n` +
+        `You cannot use integer registers (R0-R31) with ${type}.\n\n` +
+        `Correct format: ${type} F0-F31, <offset>(R0-R31)\n` +
+        `Example: ${type} F5, 20(R0)`
+      );
+    }
+  }
+  
+  // Validate SW and SD instructions
+  if (type === 'SW' || type === 'SD') {
+    // Must use R registers as source
+    if (!isDestR) {
+      throw new Error(
+        `Line ${lineNum}: Invalid source register "${dest}" for ${type} instruction:\n"${line}"\n\n` +
+        `${type} stores integers and must read from an integer register (R0-R31).\n` +
+        `You cannot use floating-point registers (F0-F31) with ${type}.\n\n` +
+        `Correct format: ${type} R0-R31, <offset>(R0-R31)\n` +
+        `Example: ${type} R5, 20(R0)`
+      );
+    }
+  }
+  
+  // Validate S.S and S.D instructions
+  if (type === 'S.S' || type === 'S.D') {
+    // Must use F registers as source
+    if (!isDestF) {
+      throw new Error(
+        `Line ${lineNum}: Invalid source register "${dest}" for ${type} instruction:\n"${line}"\n\n` +
+        `${type} stores floating-point values and must read from a floating-point register (F0-F31).\n` +
+        `You cannot use integer registers (R0-R31) with ${type}.\n\n` +
+        `Correct format: ${type} F0-F31, <offset>(R0-R31)\n` +
+        `Example: ${type} F5, 20(R0)`
+      );
+    }
+  }
 }
 
 export function initializeSimulatorState(
