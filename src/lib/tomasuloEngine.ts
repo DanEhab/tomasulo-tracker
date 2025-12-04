@@ -478,9 +478,10 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
     rs => rs.busy && rs.timeRemaining === 0
   );
   
-  // Also check load buffers that completed
+  // Also check load buffers that completed OR will complete this cycle
+  // Load can broadcast when in MEMORY_ACCESS with timeRemaining===1 (will complete in execute phase)
   const finishedLoads = state.loadStoreBuffers.load.filter(
-    buf => buf.busy && buf.stage === 'COMPLETED'
+    buf => buf.busy && (buf.stage === 'COMPLETED' || (buf.stage === 'MEMORY_ACCESS' && buf.timeRemaining === 1))
   );
   
   // CDB can only broadcast one result per cycle
@@ -546,6 +547,30 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
     
     const broadcasting = allFinished[0];
     const tag = broadcasting.tag;
+    
+    // If load is in MEMORY_ACCESS with timeRemaining=1, complete it now before broadcasting
+    if ('stage' in broadcasting && broadcasting.stage === 'MEMORY_ACCESS' && broadcasting.timeRemaining === 1) {
+      const loadBuf = broadcasting as LoadStoreBuffer;
+      const inst = state.instructions.find(i => i.id === loadBuf.instructionId);
+      
+      // Complete the memory access
+      const wasCacheHit = (loadBuf as any).cacheHit;
+      if (!wasCacheHit && loadBuf.address !== null) {
+        loadBlockIntoCache(loadBuf.address, config, state);
+      }
+      
+      if (loadBuf.address !== null) {
+        const loadResult = loadValueFromMemory(loadBuf.address, inst?.type, state.memory);
+        loadBuf.value = loadResult.value;
+        if (loadResult.bigIntValue !== undefined) {
+          const bufKey = `buf:${loadBuf.tag}`;
+          bigIntValues.set(bufKey, loadResult.bigIntValue);
+        }
+      }
+      
+      loadBuf.stage = 'COMPLETED';
+      loadBuf.timeRemaining = 0;
+    }
     
     // Calculate the actual result based on operation
     let value: number;
@@ -731,13 +756,22 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
           console.log(`  ${buf.tag} address calculation complete: ${buf.address}`);
           
           // Set exec end cycle - execution (address calculation) is complete
-          if (inst) {
+          // Only set it once (first time address calculation completes)
+          if (inst && inst.execEndCycle === undefined) {
             inst.execEndCycle = state.cycle;
           }
           
           // Check for memory conflicts with older stores
           if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true)) {
             console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
+            return;
+          }
+          
+          // Check if any earlier stores are pending to the same cache block
+          // Load must wait until those stores complete their write-back
+          if (hasPendingStoresToSameBlock(buf, state.loadStoreBuffers.store, state.instructions, config.cache.blockSize)) {
+            // Stall - don't transition to memory access yet
+            buf.timeRemaining = 1; // Will check again next cycle
             return;
           }
           
@@ -1182,6 +1216,45 @@ function checkMemoryConflicts(
       // STORE blocked by older LOAD or STORE (WAR/WAW hazard)
       console.log(`    WAR/WAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address}`);
     }
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Check if any earlier stores are writing to the same cache block
+ * Load must wait until those stores complete their write-back
+ */
+function hasPendingStoresToSameBlock(
+  loadBuf: LoadStoreBuffer,
+  storeBuffers: LoadStoreBuffer[],
+  instructions: Instruction[],
+  blockSize: number
+): boolean {
+  const loadInst = instructions.find(i => i.id === loadBuf.instructionId);
+  if (!loadInst || loadBuf.address === null) return false;
+  
+  const loadBlockNum = Math.floor(loadBuf.address / blockSize);
+  
+  for (const storeBuf of storeBuffers) {
+    if (!storeBuf.busy || storeBuf.address === null) continue;
+    
+    const storeInst = instructions.find(i => i.id === storeBuf.instructionId);
+    if (!storeInst) continue;
+    
+    // Only check earlier stores (program order)
+    if (storeInst.id >= loadInst.id) continue;
+    
+    // Check if store is to the same cache block
+    const storeBlockNum = Math.floor(storeBuf.address / blockSize);
+    if (storeBlockNum !== loadBlockNum) continue;
+    
+    // Check if store has completed write-back
+    if (storeBuf.stage === 'COMPLETED' || !storeBuf.busy) continue;
+    
+    // Found a pending store to same block
+    console.log(`    ${loadBuf.tag} blocked: earlier store ${storeBuf.tag} (stage: ${storeBuf.stage}) to same block ${loadBlockNum}`);
     return true;
   }
   
