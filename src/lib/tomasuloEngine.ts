@@ -13,11 +13,12 @@ export function parseInstructions(code: string): Instruction[] {
   return lines.map((line, index) => {
     const cleaned = line.trim().replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ');
     const parts = cleaned.split(/\s+/).filter(p => p);
+    
     // Handle split opcode tokens like "L. D" or "ADD. D" by merging
     let opcode = parts[0].toUpperCase();
     if (opcode.endsWith('.') && parts.length > 1 && parts[1].length === 1) {
       opcode = (opcode + parts[1].toUpperCase());
-      parts.splice(1, 1); // remove the next token as it's merged into opcode
+      parts.splice(1, 1);
     }
     const type = opcode as InstructionType;
     
@@ -25,23 +26,20 @@ export function parseInstructions(code: string): Instruction[] {
     let dest, src1, src2, immediate;
     
     if (type.startsWith('L') || type.startsWith('S')) {
-      // Load/Store: L.D F0, 32(R2) -> dest=F0, immediate=32, src1=R2
-      // After potential opcode merge, format is: [OPCODE, DEST, IMM, BASE]
+      // Load/Store: L.D F6, 0(R2) -> dest=F6, immediate=0, src1=R2
       dest = parts[1];
       immediate = parseFloat(parts[2]) || 0;
       src1 = parts[3];
     } else if (type === 'DADDI' || type === 'DSUBI') {
-      // Immediate: DADDI R1, R2, 100 -> dest=R1, src1=R2, immediate=100
       dest = parts[1];
       src1 = parts[2];
       immediate = parseFloat(parts[3]);
     } else if (type === 'BNE' || type === 'BEQ') {
-      // Branch: BNE R1, R2, label -> src1=R1, src2=R2
       src1 = parts[1];
       src2 = parts[2];
-      dest = parts[3]; // label
+      dest = parts[3];
     } else {
-      // Regular FP ops: ADD.D F0, F2, F4 -> dest=F0, src1=F2, src2=F4
+      // Arithmetic: MUL.D F0, F2, F4
       dest = parts[1];
       src1 = parts[2];
       src2 = parts[3];
@@ -138,7 +136,7 @@ export function initializeSimulatorState(
     isComplete: false,
   };
 
-  // Apply optional initial registers
+  // Apply initial registers
   if (config.initialRegisters) {
     Object.entries(config.initialRegisters).forEach(([name, value]) => {
       const reg = [...baseState.registers.int, ...baseState.registers.float]
@@ -149,7 +147,7 @@ export function initializeSimulatorState(
     });
   }
 
-  // Apply optional initial memory
+  // Apply initial memory
   if (config.initialMemory) {
     config.initialMemory.forEach(({ address, value }) => {
       baseState.memory.set(address, value);
@@ -163,18 +161,16 @@ export function executeSimulationStep(
   state: SimulatorState,
   config: SimulatorConfig
 ): SimulatorState {
-  const newState = JSON.parse(JSON.stringify(state)); // Deep clone
+  const newState = JSON.parse(JSON.stringify(state));
   newState.cycle = state.cycle + 1;
-  
-  console.log(`\n=== CYCLE ${newState.cycle} ===`);
   
   // PHASE 1: Write Result (CDB Broadcast)
   writeResultPhase(newState);
   
-  // PHASE 2: Execute (Decrement time for ready operations)
+  // PHASE 2: Execute
   executePhase(newState, config);
   
-  // PHASE 3: Issue (Try to issue next instruction)
+  // PHASE 3: Issue
   issuePhase(newState, config);
   
   // Check completion
@@ -185,82 +181,74 @@ export function executeSimulationStep(
   if (allComplete && newState.instructions.length > 0) {
     newState.isComplete = true;
     newState.isRunning = false;
-    console.log("✓ SIMULATION COMPLETE");
   }
   
   return newState;
 }
 
 function writeResultPhase(state: SimulatorState): void {
-  console.log("PHASE 1: Write Result");
-  
   const allStations = [
     ...state.reservationStations.add,
     ...state.reservationStations.mul
   ];
   
-  // Find stations that finished execution
-  const finishedStations = allStations.filter(
-    rs => rs.busy && rs.timeRemaining === 0
-  );
+  // Find finished stations and loads
+  const finishedStations = allStations.filter(rs => rs.busy && rs.timeRemaining === 0);
+  const finishedLoads = state.loadStoreBuffers.load.filter(buf => buf.busy && buf.timeRemaining === 0);
   
-  // Also check load buffers
-  const finishedLoads = state.loadStoreBuffers.load.filter(
-    buf => buf.busy && buf.timeRemaining === 0
-  );
-  
-  // CDB can only broadcast one result per cycle (first come first serve)
   const allFinished = [...finishedStations, ...finishedLoads];
   
   if (allFinished.length > 0) {
     const broadcasting = allFinished[0];
     const tag = broadcasting.tag;
-    const value = 'value' in broadcasting ? broadcasting.value : 
-                  (broadcasting.vj !== null ? broadcasting.vj : 0);
+    const value = 'value' in broadcasting ? (broadcasting.value ?? 0) : (broadcasting.vj ?? 0);
     
-    console.log(`  CDB Broadcasting: ${tag} = ${value}`);
-    
-    // Update instruction status
-    const inst = state.instructions.find(i => 
-      i.issueCycle !== undefined && i.writeResultCycle === undefined &&
-      (i.dest === tag || state.registers.float.find(r => r.name === i.dest && r.qi === tag) ||
-       state.registers.int.find(r => r.name === i.dest && r.qi === tag))
-    );
+    // Mark instruction complete
+    let inst: Instruction | undefined;
+    if ('instructionId' in broadcasting && broadcasting.instructionId !== undefined) {
+      inst = state.instructions.find(i => i.id === broadcasting.instructionId);
+    }
+    if (!inst) {
+      inst = state.instructions.find(i => 
+        i.issueCycle !== undefined && i.writeResultCycle === undefined &&
+        (state.registers.float.find(r => r.name === i.dest && r.qi === tag) ||
+         state.registers.int.find(r => r.name === i.dest && r.qi === tag))
+      );
+    }
     if (inst) {
       inst.writeResultCycle = state.cycle;
-      console.log(`  Instruction ${inst.id} (${inst.raw}) completed`);
     }
     
-    // Update all registers waiting for this tag
+    // Update registers
     [...state.registers.float, ...state.registers.int].forEach(reg => {
       if (reg.qi === tag) {
-        reg.value = value || 0;
+        reg.value = value;
         reg.qi = null;
-        console.log(`  Register ${reg.name} updated to ${reg.value}`);
       }
     });
     
-    // Update all RS waiting for this tag
+    // Update reservation stations
     allStations.forEach(rs => {
       if (rs.qj === tag) {
-        rs.vj = value || 0;
+        rs.vj = value;
         rs.qj = null;
       }
       if (rs.qk === tag) {
-        rs.vk = value || 0;
+        rs.vk = value;
         rs.qk = null;
       }
     });
     
     // Update store buffers waiting for value
     state.loadStoreBuffers.store.forEach(buf => {
-      if (buf.busy && buf.value === null) {
-        const srcReg = state.instructions.find(i => 
-          buf.tag.includes('Store') && i.dest && 
-          [...state.registers.float, ...state.registers.int].find(r => r.qi === tag)
-        );
-        if (srcReg) {
-          buf.value = value || 0;
+      if (buf.busy && buf.value === null && buf.instructionId !== undefined) {
+        const storeInst = state.instructions.find(i => i.id === buf.instructionId);
+        if (storeInst) {
+          const srcReg = [...state.registers.float, ...state.registers.int]
+            .find(r => r.name === storeInst.dest);
+          if (srcReg && srcReg.qi === null) {
+            buf.value = srcReg.value;
+          }
         }
       }
     });
@@ -268,12 +256,17 @@ function writeResultPhase(state: SimulatorState): void {
     // Free the broadcasting unit
     broadcasting.busy = false;
     broadcasting.timeRemaining = 0;
+    if ('instructionId' in broadcasting) {
+      broadcasting.instructionId = undefined;
+    }
+    if ('address' in broadcasting) {
+      broadcasting.address = null;
+      broadcasting.value = null;
+    }
   }
 }
 
 function executePhase(state: SimulatorState, config: SimulatorConfig): void {
-  console.log("PHASE 2: Execute");
-  
   const allStations = [
     ...state.reservationStations.add,
     ...state.reservationStations.mul
@@ -282,10 +275,6 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
   // Execute in reservation stations
   allStations.forEach(rs => {
     if (rs.busy && rs.qj === null && rs.qk === null && rs.timeRemaining > 0) {
-      rs.timeRemaining--;
-      console.log(`  ${rs.tag} executing: ${rs.timeRemaining} cycles remaining`);
-      
-      // Update instruction exec timing
       const inst = state.instructions.find(i => {
         const destReg = [...state.registers.float, ...state.registers.int]
           .find(r => r.name === i.dest);
@@ -293,33 +282,21 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       });
       if (inst && inst.execStartCycle === undefined) {
         inst.execStartCycle = state.cycle;
-        inst.execEndCycle = state.cycle + rs.timeRemaining;
+        inst.execEndCycle = state.cycle + rs.timeRemaining - 1;
       }
+      rs.timeRemaining--;
     }
   });
   
   // Execute in load buffers
   state.loadStoreBuffers.load.forEach(buf => {
     if (buf.busy && buf.timeRemaining > 0) {
-      // Set exec start/end on the corresponding load instruction for UI visibility
-      const inst = state.instructions.find(i => {
-        // A load's destination register should have been renamed to the buffer tag
-        const destReg = [...state.registers.float, ...state.registers.int]
-          .find(r => r.name === i.dest);
-        return i.issueCycle !== undefined && i.execStartCycle === undefined && destReg && destReg.qi === buf.tag;
-      });
+      const inst = state.instructions.find(i => i.id === buf.instructionId);
       if (inst && inst.execStartCycle === undefined) {
         inst.execStartCycle = state.cycle;
-        inst.execEndCycle = state.cycle + (buf.timeRemaining - 1);
+        inst.execEndCycle = state.cycle + buf.timeRemaining - 1;
       }
-
       buf.timeRemaining--;
-      console.log(`  ${buf.tag} executing: ${buf.timeRemaining} cycles remaining`);
-      
-      if (buf.timeRemaining === 0 && buf.address !== null) {
-        // Load completes - fetch from memory
-        buf.value = state.memory.get(buf.address) || 0;
-      }
     }
   });
   
@@ -327,45 +304,37 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
   state.loadStoreBuffers.store.forEach(buf => {
     if (buf.busy && buf.value !== null && buf.address !== null && buf.timeRemaining > 0) {
       buf.timeRemaining--;
-      console.log(`  ${buf.tag} executing: ${buf.timeRemaining} cycles remaining`);
       
       if (buf.timeRemaining === 0) {
-        // Store completes - write to memory
         state.memory.set(buf.address, buf.value);
-        buf.busy = false;
-        // Mark the corresponding instruction as completed (stores don't broadcast)
-        if (buf.instructionId !== undefined) {
-          const inst = state.instructions.find(i => i.id === buf.instructionId);
-          if (inst && inst.writeResultCycle === undefined) {
-            inst.execEndCycle = state.cycle;
-            inst.writeResultCycle = state.cycle; // treat completion as write-back for UI
-          }
+        const inst = state.instructions.find(i => i.id === buf.instructionId);
+        if (inst && inst.writeResultCycle === undefined) {
+          inst.execEndCycle = state.cycle;
+          inst.writeResultCycle = state.cycle;
         }
+        buf.busy = false;
+        buf.instructionId = undefined;
+        buf.address = null;
+        buf.value = null;
       }
     }
   });
 }
 
 function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
-  console.log("PHASE 3: Issue");
-  
-  // Find next instruction to issue
   const nextInst = state.instructions.find(i => i.issueCycle === undefined);
-  if (!nextInst) {
-    console.log("  No more instructions to issue");
-    return;
-  }
+  if (!nextInst) return;
   
   const type = nextInst.type;
   let targetStations: ReservationStation[] | LoadStoreBuffer[] = [];
   let isLoadStore = false;
   
-  // Determine which RS/Buffer to use
+  // Determine target
   if (type.includes('ADD') || type.includes('SUB') || type === 'DADDI' || type === 'DSUBI') {
     targetStations = state.reservationStations.add;
   } else if (type.includes('MUL') || type.includes('DIV')) {
     targetStations = state.reservationStations.mul;
-  } else if (type.startsWith('L') || type.includes('.D') && type.startsWith('L')) {
+  } else if (type.startsWith('L')) {
     targetStations = state.loadStoreBuffers.load;
     isLoadStore = true;
   } else if (type.startsWith('S')) {
@@ -373,45 +342,37 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     isLoadStore = true;
   }
   
-  // Find free station
   const freeStation = targetStations.find(s => !s.busy);
-  if (!freeStation) {
-    console.log(`  Structural hazard: No free ${type} station`);
-    return;
-  }
+  if (!freeStation) return; // Structural hazard
   
-  // Issue instruction
-  console.log(`  Issuing instruction ${nextInst.id}: ${nextInst.raw} to ${freeStation.tag}`);
+  // Issue
   nextInst.issueCycle = state.cycle;
   freeStation.busy = true;
   
   if (isLoadStore) {
     const buf = freeStation as LoadStoreBuffer;
+    buf.instructionId = nextInst.id;
+    
     // Calculate address
     const baseReg = [...state.registers.int, ...state.registers.float]
       .find(r => r.name === nextInst.src1);
-    const offset = nextInst.immediate || 0;
-    buf.address = (baseReg?.value || 0) + offset;
+    buf.address = (baseReg?.value || 0) + (nextInst.immediate || 0);
     buf.timeRemaining = getInstructionLatency(type, config);
     
-    if (type.startsWith('S')) {
-      // Store: need to get value from source register
-      const srcReg = [...state.registers.float, ...state.registers.int]
-        .find(r => r.name === nextInst.dest);
-      if (srcReg) {
-        if (srcReg.qi === null) {
-          buf.value = srcReg.value;
-        } else {
-          buf.value = null; // Wait for CDB
-        }
-      }
-    } else if (type.startsWith('L')) {
-      // Load: register renaming for destination so CDB updates correctly
+    if (type.startsWith('L')) {
+      // Load: fetch from memory and rename dest register
+      buf.value = state.memory.get(buf.address) || 0;
       const destReg = [...state.registers.float, ...state.registers.int]
         .find(r => r.name === nextInst.dest);
       if (destReg) {
         destReg.qi = buf.tag;
-        console.log(`    Register ${destReg.name} renamed to ${buf.tag}`);
+      }
+    } else if (type.startsWith('S')) {
+      // Store: get value from source register
+      const srcReg = [...state.registers.float, ...state.registers.int]
+        .find(r => r.name === nextInst.dest);
+      if (srcReg) {
+        buf.value = srcReg.qi === null ? srcReg.value : null;
       }
     }
   } else {
@@ -420,9 +381,9 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     rs.a = nextInst.immediate || null;
     rs.timeRemaining = getInstructionLatency(type, config);
     
-    // Get source operands
     const allRegs = [...state.registers.float, ...state.registers.int];
     
+    // Get source operands
     if (nextInst.src1) {
       const src1Reg = allRegs.find(r => r.name === nextInst.src1);
       if (src1Reg) {
@@ -432,7 +393,6 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
         } else {
           rs.vj = null;
           rs.qj = src1Reg.qi;
-          console.log(`    RAW hazard: waiting for ${src1Reg.qi}`);
         }
       }
     }
@@ -446,17 +406,15 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
         } else {
           rs.vk = null;
           rs.qk = src2Reg.qi;
-          console.log(`    RAW hazard: waiting for ${src2Reg.qi}`);
         }
       }
     }
     
-    // Register renaming (WAR/WAW handling)
+    // Register renaming
     if (nextInst.dest) {
       const destReg = allRegs.find(r => r.name === nextInst.dest);
       if (destReg) {
         destReg.qi = rs.tag;
-        console.log(`    Register ${destReg.name} renamed to ${rs.tag}`);
       }
     }
   }
