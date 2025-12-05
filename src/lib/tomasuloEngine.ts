@@ -478,10 +478,10 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
     rs => rs.busy && rs.timeRemaining === 0
   );
   
-  // Also check load buffers that completed OR will complete this cycle
-  // Load can broadcast when in MEMORY_ACCESS with timeRemaining===1 (will complete in execute phase)
+  // Also check load buffers that completed
+  // Loads only broadcast when stage is COMPLETED (set by execute phase when timeRemaining reaches 0)
   const finishedLoads = state.loadStoreBuffers.load.filter(
-    buf => buf.busy && (buf.stage === 'COMPLETED' || (buf.stage === 'MEMORY_ACCESS' && buf.timeRemaining === 1))
+    buf => buf.busy && buf.stage === 'COMPLETED'
   );
   
   // CDB can only broadcast one result per cycle
@@ -548,29 +548,8 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
     const broadcasting = allFinished[0];
     const tag = broadcasting.tag;
     
-    // If load is in MEMORY_ACCESS with timeRemaining=1, complete it now before broadcasting
-    if ('stage' in broadcasting && broadcasting.stage === 'MEMORY_ACCESS' && broadcasting.timeRemaining === 1) {
-      const loadBuf = broadcasting as LoadStoreBuffer;
-      const inst = state.instructions.find(i => i.id === loadBuf.instructionId);
-      
-      // Complete the memory access
-      const wasCacheHit = (loadBuf as any).cacheHit;
-      if (!wasCacheHit && loadBuf.address !== null) {
-        loadBlockIntoCache(loadBuf.address, config, state);
-      }
-      
-      if (loadBuf.address !== null) {
-        const loadResult = loadValueFromMemory(loadBuf.address, inst?.type, state.memory);
-        loadBuf.value = loadResult.value;
-        if (loadResult.bigIntValue !== undefined) {
-          const bufKey = `buf:${loadBuf.tag}`;
-          bigIntValues.set(bufKey, loadResult.bigIntValue);
-        }
-      }
-      
-      loadBuf.stage = 'COMPLETED';
-      loadBuf.timeRemaining = 0;
-    }
+    // Loads in MEMORY_ACCESS stage will be completed by the execute phase when timeRemaining reaches 0
+    // The write result phase should not prematurely complete loads
     
     // Calculate the actual result based on operation
     let value: number;
