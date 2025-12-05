@@ -1240,8 +1240,16 @@ function checkMemoryConflicts(
     if (!isOlder) continue;
     
     // Check if the other instruction is still in progress
-    // For stores in WRITE_BACK stage, they are completing this cycle, so don't block
-    const otherComplete = otherBuf.stage === 'COMPLETED' || otherBuf.stage === 'WRITE_BACK' || !otherBuf.busy;
+    // For LOADS: can proceed when older store is in WRITE_BACK (block already in cache)
+    // For STORES: must wait until older store is COMPLETED (fully written back for WAW)
+    let otherComplete: boolean;
+    if (isLoad) {
+      // Load can proceed when store is in WRITE_BACK or COMPLETED
+      otherComplete = otherBuf.stage === 'COMPLETED' || otherBuf.stage === 'WRITE_BACK' || !otherBuf.busy;
+    } else {
+      // Store must wait until other instruction is fully COMPLETED
+      otherComplete = otherBuf.stage === 'COMPLETED' || !otherBuf.busy;
+    }
     if (otherComplete) continue;
     
     // Conflict found
