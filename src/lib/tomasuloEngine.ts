@@ -732,81 +732,88 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       
       // Execute address calculation (takes LOAD latency cycles)
       if (buf.timeRemaining > 0) {
-        buf.timeRemaining--;
-        console.log(`  ${buf.tag} calculating address: ${buf.timeRemaining} cycles remaining`);
-        
         // Set exec start cycle on first execution
         if (inst && inst.execStartCycle === undefined) {
           inst.execStartCycle = state.cycle;
         }
         
-        // Address calculation completes
-        if (buf.timeRemaining === 0) {
-          // Calculate the address now
-          const allRegs = [...state.registers.int, ...state.registers.float];
-          const baseReg = allRegs.find(r => r.name === inst?.src1);
-          const offset = inst?.immediate || 0;
-          
-          if (baseReg) {
-            buf.address = baseReg.value + offset;
-          } else {
-            buf.address = offset;
-          }
-          
-          console.log(`  ${buf.tag} address calculation complete: ${buf.address}`);
-          
-          // Set exec end cycle - execution (address calculation) is complete
-          // Only set it once (first time address calculation completes)
-          if (inst && inst.execEndCycle === undefined) {
-            inst.execEndCycle = state.cycle;
-          }
-          
-          // Check for memory conflicts with older stores
-          if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true)) {
-            console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
-            return;
-          }
-          
-          // Check if any earlier stores are pending to the same cache block
-          // Load must wait until those stores complete their write-back
-          if (hasPendingStoresToSameBlock(buf, state.loadStoreBuffers.store, state.instructions, config.cache.blockSize)) {
-            // Stall - don't transition to memory access yet
-            buf.timeRemaining = 1; // Will check again next cycle
-            return;
-          }
-          
-          // Check cache (but don't load block yet)
-          const { latency, hit } = accessCache(buf.address, config, state, getLoadSize(inst?.type));
-          buf.timeRemaining = latency;
-          buf.stage = 'MEMORY_ACCESS';
-          
-          // Store whether this was a hit or miss, and when to load the block
-          (buf as any).cacheHit = hit;
-          // For cache miss, block should appear after miss penalty (not including hit latency)
-          (buf as any).cyclesUntilBlockLoaded = hit ? 0 : config.cache.missLatency;
-          
-          console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
-          
-          // If latency is 0, complete immediately
-          if (latency === 0) {
-            if (!hit) {
-              loadBlockIntoCache(buf.address, config, state);
-            }
-            const loadResult = loadValueFromMemory(buf.address, inst?.type, state.memory);
-            buf.value = loadResult.value;
-            if (loadResult.bigIntValue !== undefined) {
-              const bufKey = `buf:${buf.tag}`;
-              bigIntValues.set(bufKey, loadResult.bigIntValue);
-            }
-            buf.stage = 'COMPLETED';
-            console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address} (instant)`);
-          }
-          
-          // Return here - don't decrement in the same cycle we transition
+        buf.timeRemaining--;
+        console.log(`  ${buf.tag} calculating address: ${buf.timeRemaining} cycles remaining`);
+        
+        // If still calculating, wait for next cycle
+        if (buf.timeRemaining > 0) {
           return;
         }
+        
+        // timeRemaining just reached 0, address calculation completes this cycle
+        // Fall through to calculate address and set execEndCycle
+      }
+      
+      // Address calculation complete (timeRemaining === 0)
+      // Calculate the address if not already done
+      if (buf.address === null) {
+        const allRegs = [...state.registers.int, ...state.registers.float];
+        const baseReg = allRegs.find(r => r.name === inst?.src1);
+        const offset = inst?.immediate || 0;
+        
+        if (baseReg) {
+          buf.address = baseReg.value + offset;
+        } else {
+          buf.address = offset;
+        }
+        
+        console.log(`  ${buf.tag} address calculation complete: ${buf.address}`);
+        
+        // Set exec end cycle - execution (address calculation) is complete
+        if (inst && inst.execEndCycle === undefined) {
+          inst.execEndCycle = state.cycle;
+        }
+      }
+      
+      // Check for memory conflicts with older stores (RAW hazards)
+      if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true)) {
+        console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
         return;
       }
+      
+      // Check if any earlier stores are pending to the same cache block
+      // Load must wait until those stores complete their write-back
+      if (hasPendingStoresToSameBlock(buf, state.loadStoreBuffers.store, state.instructions, config.cache.blockSize)) {
+        // Stall - don't transition to memory access yet
+        // Don't reset timeRemaining, just return and check again next cycle
+        return;
+      }
+      
+      // No conflicts, proceed to memory access
+      // Check cache (but don't load block yet)
+      const { latency, hit } = accessCache(buf.address, config, state, getLoadSize(inst?.type));
+      buf.timeRemaining = latency;
+      buf.stage = 'MEMORY_ACCESS';
+      
+      // Store whether this was a hit or miss, and when to load the block
+      (buf as any).cacheHit = hit;
+      // For cache miss, block should appear after miss penalty (not including hit latency)
+      (buf as any).cyclesUntilBlockLoaded = hit ? 0 : config.cache.missLatency;
+      
+      console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
+      
+      // If latency is 0, complete immediately
+      if (latency === 0) {
+        if (!hit) {
+          loadBlockIntoCache(buf.address, config, state);
+        }
+        const loadResult = loadValueFromMemory(buf.address, inst?.type, state.memory);
+        buf.value = loadResult.value;
+        if (loadResult.bigIntValue !== undefined) {
+          const bufKey = `buf:${buf.tag}`;
+          bigIntValues.set(bufKey, loadResult.bigIntValue);
+        }
+        buf.stage = 'COMPLETED';
+        console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address} (instant)`);
+      }
+      
+      // Return here - don't decrement in the same cycle we transition
+      return;
     }
     
     // STAGE 2: Memory Access (cache access after execution completes)
