@@ -771,7 +771,7 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       }
       
       // Check for memory conflicts with older stores (RAW hazards)
-      if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true)) {
+      if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true, config.cache.blockSize)) {
         console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
         return;
       }
@@ -882,46 +882,53 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
           
           buf.timeRemaining--;
           console.log(`  ${buf.tag} executing (store latency): ${buf.timeRemaining} cycles remaining`);
+          
+          // If still executing, wait for next cycle
+          if (buf.timeRemaining > 0) {
+            return;
+          }
+          
+          // timeRemaining just reached 0, execution completes this cycle
+          // Fall through to set execEndCycle and check for conflicts
         }
         
-        if (buf.timeRemaining === 0) {
-          // Execution complete, move to cache access
+        // Execution complete (timeRemaining === 0)
+        // Set exec end cycle if not already set
+        if (inst && inst.execEndCycle === undefined) {
+          inst.execEndCycle = state.cycle;
           console.log(`  ${buf.tag} execution complete, address: ${buf.address}, value: ${buf.value}`);
-          
-          // Check for memory conflicts
-          if (checkMemoryConflicts(buf, state.loadStoreBuffers.load, state.instructions, false)) {
-            console.log(`  ${buf.tag} blocked by memory conflict (WAR hazard)`);
-            buf.timeRemaining = 1; // Wait one more cycle
-            return;
-          }
-          
-          if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, false)) {
-            console.log(`  ${buf.tag} blocked by memory conflict (WAW hazard)`);
-            buf.timeRemaining = 1; // Wait one more cycle
-            return;
-          }
-          
-          // Start cache access (miss penalty + hit latency, or just hit latency)
-          const { latency, hit } = accessCache(buf.address, config, state, getStoreSize(inst?.type));
-          (buf as any).cacheHit = hit;
-          
-          if (!hit) {
-            // Cache MISS: miss penalty + hit latency
-            buf.timeRemaining = config.cache.missLatency + config.cache.hitLatency;
-            (buf as any).cyclesUntilBlockLoaded = config.cache.missLatency;
-            buf.stage = 'CACHE_ACCESS';
-            console.log(`  ${buf.tag} starting cache access (MISS): ${config.cache.missLatency} cycles miss penalty + ${config.cache.hitLatency} cycle hit latency`);
-          } else {
-            // Cache HIT: just hit latency
-            buf.timeRemaining = config.cache.hitLatency;
-            buf.stage = 'CACHE_ACCESS';
-            console.log(`  ${buf.tag} starting cache access (HIT): ${config.cache.hitLatency} cycles hit latency`);
-          }
-          
-          if (inst && inst.execEndCycle === undefined) {
-            inst.execEndCycle = state.cycle;
-          }
         }
+        
+        // Check for memory conflicts with older loads (WAR hazards)
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.load, state.instructions, false, config.cache.blockSize)) {
+          console.log(`  ${buf.tag} blocked by memory conflict (WAR hazard)`);
+          return;
+        }
+        
+        // Check for memory conflicts with older stores (WAW hazards)
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, false, config.cache.blockSize)) {
+          console.log(`  ${buf.tag} blocked by memory conflict (WAW hazard)`);
+          return;
+        }
+        
+        // No conflicts, proceed to cache access
+        // Start cache access (miss penalty + hit latency, or just hit latency)
+        const { latency, hit } = accessCache(buf.address, config, state, getStoreSize(inst?.type));
+        (buf as any).cacheHit = hit;
+        
+        if (!hit) {
+          // Cache MISS: miss penalty + hit latency
+          buf.timeRemaining = config.cache.missLatency + config.cache.hitLatency;
+          (buf as any).cyclesUntilBlockLoaded = config.cache.missLatency;
+          buf.stage = 'CACHE_ACCESS';
+          console.log(`  ${buf.tag} starting cache access (MISS): ${config.cache.missLatency} cycles miss penalty + ${config.cache.hitLatency} cycle hit latency`);
+        } else {
+          // Cache HIT: just hit latency
+          buf.timeRemaining = config.cache.hitLatency;
+          buf.stage = 'CACHE_ACCESS';
+          console.log(`  ${buf.tag} starting cache access (HIT): ${config.cache.hitLatency} cycles hit latency`);
+        }
+        
         return;
       }
     }
@@ -1186,16 +1193,20 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
  * @param otherBuffers - Other buffers to check against
  * @param instructions - All instructions for ordering
  * @param isLoad - True if checking for a LOAD, false for STORE
+ * @param blockSize - Cache block size for checking same block conflicts
  * @returns True if there's a conflict (should block), false otherwise
  */
 function checkMemoryConflicts(
   currentBuf: LoadStoreBuffer,
   otherBuffers: LoadStoreBuffer[],
   instructions: Instruction[],
-  isLoad: boolean
+  isLoad: boolean,
+  blockSize: number
 ): boolean {
   const currentInst = instructions.find(i => i.id === currentBuf.instructionId);
   if (!currentInst || currentBuf.address === null) return false;
+  
+  const currentBlockNum = Math.floor(currentBuf.address / blockSize);
   
   for (const otherBuf of otherBuffers) {
     if (!otherBuf.busy || otherBuf.address === null) continue;
@@ -1204,8 +1215,9 @@ function checkMemoryConflicts(
     const otherInst = instructions.find(i => i.id === otherBuf.instructionId);
     if (!otherInst) continue;
     
-    // Check if addresses conflict (same block)
-    if (currentBuf.address !== otherBuf.address) continue;
+    // Check if addresses conflict (same cache block)
+    const otherBlockNum = Math.floor(otherBuf.address / blockSize);
+    if (currentBlockNum !== otherBlockNum) continue;
     
     // Check program order: only block if the other instruction is older
     const isOlder = otherInst.id < currentInst.id;
@@ -1217,11 +1229,11 @@ function checkMemoryConflicts(
     
     // Conflict found
     if (isLoad) {
-      // LOAD blocked by older STORE with same address (RAW hazard)
-      console.log(`    RAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address}`);
+      // LOAD blocked by older STORE with same cache block (RAW hazard)
+      console.log(`    RAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address} (block ${currentBlockNum})`);
     } else {
-      // STORE blocked by older LOAD or STORE (WAR/WAW hazard)
-      console.log(`    WAR/WAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address}`);
+      // STORE blocked by older LOAD or STORE with same cache block (WAR/WAW hazard)
+      console.log(`    WAR/WAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address} (block ${currentBlockNum})`);
     }
     return true;
   }
