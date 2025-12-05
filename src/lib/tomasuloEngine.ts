@@ -17,7 +17,18 @@ export function parseInstructions(code: string): Instruction[] {
   const lines = code.trim().split('\n').filter(line => line.trim() && !line.trim().startsWith('#'));
   
   const instructions = lines.map((line, index) => {
-    const cleaned = line.trim().replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ').replace(/#/g, '');
+    // Handle labels: "LABEL: INSTRUCTION" -> extract label and parse instruction
+    let label: string | undefined;
+    let instructionPart = line.trim();
+    
+    if (instructionPart.includes(':')) {
+      const colonIndex = instructionPart.indexOf(':');
+      label = instructionPart.substring(0, colonIndex).trim();
+      instructionPart = instructionPart.substring(colonIndex + 1).trim();
+      console.log(`Parsing line ${index}: Found label "${label}", instruction: "${instructionPart}"`);
+    }
+    
+    const cleaned = instructionPart.replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ').replace(/#/g, '');
     const parts = cleaned.split(/\s+/).filter(p => p);
     console.log(`Parsing line ${index}: "${line}" -> parts:`, parts);
     // Handle split opcode tokens like "L. D" or "ADD. D" by merging
@@ -71,6 +82,7 @@ export function parseInstructions(code: string): Instruction[] {
       src1,
       src2,
       immediate,
+      label,
     };
   });
   
@@ -83,6 +95,14 @@ export function parseInstructions(code: string): Instruction[] {
     const errorLines = r0WriteInstructions.map(inst => `Line ${inst.id + 1}: ${inst.raw}`).join('\n');
     throw new Error(`Cannot write to R0 register (always 0):\n${errorLines}`);
   }
+  
+  // Debug: Log parsed instruction list
+  console.log(`\n=== PARSED ${instructions.length} INSTRUCTIONS ===`);
+  instructions.forEach(inst => {
+    const labelStr = inst.label ? `[${inst.label}] ` : '';
+    console.log(`  ${inst.id}: ${labelStr}${inst.type} ${inst.dest || ''} ${inst.src1 || ''} ${inst.src2 || ''} ${inst.immediate !== undefined ? inst.immediate : ''}`);
+  });
+  console.log('=================================\n');
   
   return instructions;
 }
@@ -342,10 +362,15 @@ export function executeSimulationStep(
     inst => inst.writeResultCycle !== undefined
   );
   
+  const completedCount = newState.instructions.filter(inst => inst.writeResultCycle !== undefined).length;
+  const totalCount = newState.instructions.length;
+  
+  console.log(`Completion status: ${completedCount}/${totalCount} instructions completed`);
+  
   if (allComplete && newState.instructions.length > 0) {
     newState.isComplete = true;
     newState.isRunning = false;
-    console.log("✓ SIMULATION COMPLETE");
+    console.log("✓ SIMULATION COMPLETE - All instructions have written results");
   }
   
   return newState;
@@ -409,6 +434,12 @@ function computeResult(rs: ReservationStation): number {
   } else if (op === 'DSUBI') {
     // Integer subtract immediate: Vj - Vk (immediate is in Vk)
     return vj - vk;
+  } else if (op === 'BNE') {
+    // Branch if not equal: return 1 if Vj != Vk, else 0
+    return vj !== vk ? 1 : 0;
+  } else if (op === 'BEQ') {
+    // Branch if equal: return 1 if Vj == Vk, else 0
+    return vj === vk ? 1 : 0;
   }
   
   console.warn(`    Unknown operation ${op}, returning Vj`);
@@ -984,7 +1015,9 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   // Find next instruction to issue
   const nextInst = state.instructions.find(i => i.issueCycle === undefined);
   if (!nextInst) {
-    console.log("  No more instructions to issue");
+    const totalInstructions = state.instructions.length;
+    const issuedCount = state.instructions.filter(i => i.issueCycle !== undefined).length;
+    console.log(`  No more instructions to issue (${issuedCount}/${totalInstructions} issued)`);
     return;
   }
   
@@ -993,7 +1026,7 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   let isLoadStore = false;
   
   // Determine which RS/Buffer to use
-  if (type === 'DADDI' || type === 'DSUBI') {
+  if (type === 'DADDI' || type === 'DSUBI' || type === 'BNE' || type === 'BEQ') {
     targetStations = state.reservationStations.intAdd;
   } else if (type.includes('ADD') || type.includes('SUB')) {
     targetStations = state.reservationStations.add;
@@ -1015,7 +1048,8 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   }
   
   // Issue instruction
-  console.log(`  Issuing instruction ${nextInst.id}: ${nextInst.raw} to ${freeStation.tag}`);
+  const labelStr = nextInst.label ? `[${nextInst.label}] ` : '';
+  console.log(`  Issuing instruction ${nextInst.id}: ${labelStr}${nextInst.raw} to ${freeStation.tag}`);
   nextInst.issueCycle = state.cycle;
   freeStation.busy = true;
   
@@ -1156,7 +1190,8 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     }
     
     // Register renaming (WAR/WAW handling)
-    if (nextInst.dest) {
+    // Branch instructions (BNE, BEQ) don't write to registers, so skip renaming
+    if (nextInst.dest && type !== 'BNE' && type !== 'BEQ') {
       const destReg = allRegs.find(r => r.name === nextInst.dest);
       if (destReg) {
         destReg.qi = rs.tag;
@@ -1580,7 +1615,7 @@ function getStoreSize(type?: InstructionType): number {
 }
 
 export function getInstructionLatency(type: InstructionType, config: SimulatorConfig): number {
-  if (type === 'DADDI' || type === 'DSUBI') {
+  if (type === 'DADDI' || type === 'DSUBI' || type === 'BNE' || type === 'BEQ') {
     return config.latencies.INT_ADD;
   }
   if (type.includes('ADD') || type.includes('SUB')) {

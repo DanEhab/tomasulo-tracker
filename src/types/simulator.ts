@@ -18,6 +18,7 @@ export interface Instruction {
   src1?: string;
   src2?: string;
   immediate?: number;
+  label?: string; // Optional label for this instruction (e.g., "TARGET:")
   issueCycle?: number;
   execStartCycle?: number;
   execEndCycle?: number;
