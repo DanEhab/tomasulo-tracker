@@ -827,24 +827,26 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
     }
     
     // STAGE 2: Memory Access (cache access after execution completes)
-    if (buf.stage === 'MEMORY_ACCESS' && buf.timeRemaining > 0) {
-      buf.timeRemaining--;
-      
-      // Check if we should load the block into cache (after miss penalty only, not hit latency)
-      const wasCacheHit = (buf as any).cacheHit;
-      let cyclesUntilBlockLoaded = (buf as any).cyclesUntilBlockLoaded;
-      
-      if (!wasCacheHit && cyclesUntilBlockLoaded !== undefined) {
-        cyclesUntilBlockLoaded--;
-        (buf as any).cyclesUntilBlockLoaded = cyclesUntilBlockLoaded;
+    if (buf.stage === 'MEMORY_ACCESS') {
+      if (buf.timeRemaining > 0) {
+        buf.timeRemaining--;
         
-        if (cyclesUntilBlockLoaded === 0 && buf.address !== null) {
-          // Miss penalty complete - load block into cache now
-          loadBlockIntoCache(buf.address, config, state);
+        // Check if we should load the block into cache (after miss penalty only, not hit latency)
+        const wasCacheHit = (buf as any).cacheHit;
+        let cyclesUntilBlockLoaded = (buf as any).cyclesUntilBlockLoaded;
+        
+        if (!wasCacheHit && cyclesUntilBlockLoaded !== undefined) {
+          cyclesUntilBlockLoaded--;
+          (buf as any).cyclesUntilBlockLoaded = cyclesUntilBlockLoaded;
+          
+          if (cyclesUntilBlockLoaded === 0 && buf.address !== null) {
+            // Miss penalty complete - load block into cache now
+            loadBlockIntoCache(buf.address, config, state);
+          }
         }
+        
+        console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
       }
-      
-      console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
       
       if (buf.timeRemaining === 0 && buf.address !== null) {
         // Cache access completes (miss penalty + hit latency)
@@ -1238,7 +1240,8 @@ function checkMemoryConflicts(
     if (!isOlder) continue;
     
     // Check if the other instruction is still in progress
-    const otherComplete = otherBuf.stage === 'COMPLETED' || !otherBuf.busy;
+    // For stores in WRITE_BACK stage, they are completing this cycle, so don't block
+    const otherComplete = otherBuf.stage === 'COMPLETED' || otherBuf.stage === 'WRITE_BACK' || !otherBuf.busy;
     if (otherComplete) continue;
     
     // Conflict found
@@ -1283,8 +1286,8 @@ function hasPendingStoresToSameBlock(
     const storeBlockNum = Math.floor(storeBuf.address / blockSize);
     if (storeBlockNum !== loadBlockNum) continue;
     
-    // Check if store has completed write-back
-    if (storeBuf.stage === 'COMPLETED' || !storeBuf.busy) continue;
+    // Check if store has completed or is in write-back phase (completes this cycle)
+    if (storeBuf.stage === 'COMPLETED' || storeBuf.stage === 'WRITE_BACK' || !storeBuf.busy) continue;
     
     // Found a pending store to same block
     console.log(`    ${loadBuf.tag} blocked: earlier store ${storeBuf.tag} (stage: ${storeBuf.stage}) to same block ${loadBlockNum}`);
