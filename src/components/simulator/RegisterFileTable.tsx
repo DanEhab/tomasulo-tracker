@@ -75,20 +75,21 @@ export const RegisterFileTable = ({ title, registers, isEditable, onValueChange 
                         <span className={isR0 ? "text-muted-foreground" : ""}>
                           {(() => {
                             if (isFloatRegister) {
-                              // Check if this is a raw 32-bit single-precision pattern
-                              // (values that fit in 32-bit unsigned range might be single-precision)
-                              if (Number.isInteger(reg.value) && reg.value >= 0 && reg.value <= 0xFFFFFFFF) {
-                                // Try to interpret as single-precision float
+                              // Just display the value as-is for float registers
+                              // Don't try to interpret as raw bit patterns unless the value is very large
+                              // (indicating it's truly a raw bit pattern from L.S, not a normal float)
+                              if (Number.isInteger(reg.value) && reg.value > 1000000) {
+                                // This looks like a raw 32-bit pattern from L.S instruction
                                 const buffer = new ArrayBuffer(4);
                                 const view = new DataView(buffer);
                                 view.setUint32(0, reg.value, true);
                                 const floatValue = view.getFloat32(0, true);
                                 
-                                // If it looks like a reasonable float value, display it
                                 if (isFinite(floatValue)) {
                                   return floatValue.toFixed(6);
                                 }
                               }
+                              // Normal float value - just display it
                               return reg.value.toFixed(2);
                             }
                             // For integer registers, check if BigInt value exists and if precision was lost
