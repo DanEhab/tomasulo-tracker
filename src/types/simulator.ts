@@ -56,6 +56,7 @@ export interface LoadStoreBuffer {
   baseRegisterTag: string | null; // Tag of RS producing base register value
   storeValueTag: string | null; // For stores: tag of RS producing value to store
   stage: 'ADDRESS_CALC' | 'EXECUTING' | 'MEMORY_ACCESS' | 'CACHE_ACCESS' | 'WRITE_BACK' | 'COMPLETED'; // Execution stage
+  operandsReadyCycle?: number; // Track when operands became ready (for stores waiting on value)
 }
 
 export interface CacheBlock {

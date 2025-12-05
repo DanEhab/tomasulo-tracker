@@ -679,6 +679,8 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
             bigIntValues.set(bufKey, bigIntValue);
           }
           buf.storeValueTag = null;
+          // Track when store value became ready to prevent execution in same cycle
+          buf.operandsReadyCycle = state.cycle;
           console.log(`  ${buf.tag} store value resolved: ${buf.value}${bigIntValue ? ` (BigInt: 0x${bigIntValue.toString(16)})` : ''}`);
         }
       }
@@ -781,7 +783,7 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
       }
       
       // Check for memory conflicts with older stores (RAW hazards)
-      if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true, config.cache.blockSize)) {
+      if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true, config.cache.blockSize, state.cycle)) {
         console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
         return;
       }
@@ -884,6 +886,12 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         return;
       }
       
+      // Don't execute in the same cycle operands became ready
+      if (buf.operandsReadyCycle !== undefined && buf.operandsReadyCycle === state.cycle) {
+        console.log(`  ${buf.tag} operands just became ready, waiting until next cycle to execute`);
+        return;
+      }
+      
       // Operands ready, execute for store latency cycles
       if (buf.address !== null && buf.value !== null) {
         if (buf.timeRemaining > 0) {
@@ -912,13 +920,13 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
         }
         
         // Check for memory conflicts with older loads (WAR hazards)
-        if (checkMemoryConflicts(buf, state.loadStoreBuffers.load, state.instructions, false, config.cache.blockSize)) {
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.load, state.instructions, false, config.cache.blockSize, state.cycle)) {
           console.log(`  ${buf.tag} blocked by memory conflict (WAR hazard)`);
           return;
         }
         
         // Check for memory conflicts with older stores (WAW hazards)
-        if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, false, config.cache.blockSize)) {
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, false, config.cache.blockSize, state.cycle)) {
           console.log(`  ${buf.tag} blocked by memory conflict (WAW hazard)`);
           return;
         }
@@ -941,6 +949,7 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
           console.log(`  ${buf.tag} starting cache access (HIT): ${config.cache.hitLatency} cycles hit latency`);
         }
         
+        // Return here - don't start cache access in the same cycle we transition
         return;
       }
     }
@@ -1217,7 +1226,8 @@ function checkMemoryConflicts(
   otherBuffers: LoadStoreBuffer[],
   instructions: Instruction[],
   isLoad: boolean,
-  blockSize: number
+  blockSize: number,
+  currentCycle?: number
 ): boolean {
   const currentInst = instructions.find(i => i.id === currentBuf.instructionId);
   if (!currentInst || currentBuf.address === null) return false;
@@ -1241,14 +1251,25 @@ function checkMemoryConflicts(
     
     // Check if the other instruction is still in progress
     // For LOADS: can proceed when older store is in WRITE_BACK (block already in cache)
-    // For STORES: must wait until older store is COMPLETED (fully written back for WAW)
+    // For STORES: must wait until older instruction has broadcast its result
+    //             For WAR: store must wait until load broadcasts (writeResultCycle defined) + 1 cycle
+    //             For WAW: store must wait until older store is fully COMPLETED
     let otherComplete: boolean;
     if (isLoad) {
       // Load can proceed when store is in WRITE_BACK or COMPLETED
       otherComplete = otherBuf.stage === 'COMPLETED' || otherBuf.stage === 'WRITE_BACK' || !otherBuf.busy;
     } else {
-      // Store must wait until other instruction is fully COMPLETED
-      otherComplete = otherBuf.stage === 'COMPLETED' || !otherBuf.busy;
+      // Store must wait until other instruction has written its result
+      // WAR hazard: Store must wait until load broadcasts + 1 cycle
+      // Check if the other instruction has broadcast its result
+      const hasBroadcast = otherInst.writeResultCycle !== undefined;
+      
+      // If just broadcast this cycle, store must still wait one more cycle
+      const justBroadcast = currentCycle !== undefined && 
+                            otherInst.writeResultCycle === currentCycle;
+      
+      // Other is complete if it has broadcast AND it's not the same cycle
+      otherComplete = hasBroadcast && !justBroadcast;
     }
     if (otherComplete) continue;
     
