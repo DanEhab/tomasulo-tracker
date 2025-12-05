@@ -7,6 +7,8 @@ import { Plus, Trash2, Info } from "lucide-react";
 import { MemoryByteInput } from "./MemoryByteInput";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
 
 interface MemoryTableProps {
   memory: Map<number, number>;
@@ -21,6 +23,9 @@ export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete
   const [newValue, setNewValue] = useState<number>(0);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingAddress, setEditingAddress] = useState<number | null>(null);
+  const [memoryFormat, setMemoryFormat] = useState<'byte' | 'float' | 'double'>('byte');
+  const [editFormat, setEditFormat] = useState<'byte' | 'float' | 'double'>('byte');
+  const [addressError, setAddressError] = useState<string>("");
 
   // Convert Map to sorted array
   const memoryEntries = Array.from(memory.entries()).sort((a, b) => a[0] - b[0]);
@@ -30,17 +35,34 @@ export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete
     onMemoryChange(address, value);
   };
 
+  const validateAddress = (address: number): string => {
+    if (memoryFormat === 'float' && address % 4 !== 0) {
+      return "Float addresses must be divisible by 4 bytes";
+    }
+    if (memoryFormat === 'double' && address % 8 !== 0) {
+      return "Double addresses must be divisible by 8 bytes";
+    }
+    return "";
+  };
+
   const handleAddMemory = () => {
     if (!onMemoryAdd) return;
     
     const address = parseInt(newAddress);
     
-    if (!isNaN(address) && address >= 0) {
-      onMemoryAdd(address, newValue);
-      setNewAddress("");
-      setNewValue(0);
-      setIsAddDialogOpen(false);
+    if (isNaN(address) || address < 0) return;
+    
+    const error = validateAddress(address);
+    if (error) {
+      setAddressError(error);
+      return;
     }
+    
+    onMemoryAdd(address, newValue);
+    setNewAddress("");
+    setNewValue(0);
+    setAddressError("");
+    setIsAddDialogOpen(false);
   };
 
   return (
@@ -57,8 +79,13 @@ export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete
           <Alert className="bg-blue-500/10 border-blue-500/30">
             <Info className="h-4 w-4 text-blue-500" />
             <AlertDescription className="text-xs text-muted-foreground">
-              <strong>Memory is byte-addressable:</strong> Each address stores exactly <strong>1 byte (8 bits)</strong> of data.
-              Values range from <span className="font-mono">0x00</span> to <span className="font-mono">0xFF</span> (0-255 decimal).
+              <strong>Memory supports multiple formats:</strong>
+              <br />
+              • <strong>Byte (8-bit):</strong> 0-255, any address
+              <br />
+              • <strong>Float (32-bit):</strong> 4 bytes, address divisible by 4
+              <br />
+              • <strong>Double (64-bit):</strong> 8 bytes, address divisible by 8
             </AlertDescription>
           </Alert>
 
@@ -75,34 +102,87 @@ export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete
                 <DialogHeader>
                   <DialogTitle>Add Memory Location</DialogTitle>
                   <DialogDescription className="text-xs">
-                    Set the value for a single byte at a specific memory address.
-                    You can input in binary or hexadecimal format.
+                    Set a value at a specific memory address.
+                    Choose the data format and input method below.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
                   <div className="space-y-2">
+                    <label className="text-sm font-medium">Data Format</label>
+                    <RadioGroup 
+                      value={memoryFormat} 
+                      onValueChange={(v) => {
+                        setMemoryFormat(v as 'byte' | 'float' | 'double');
+                        setAddressError("");
+                      }}
+                      className="flex gap-4"
+                    >
+                      <div className="flex items-center space-x-2">
+                        <RadioGroupItem value="byte" id="format-byte" />
+                        <Label htmlFor="format-byte" className="text-xs font-medium cursor-pointer">
+                          Byte (8-bit)
+                        </Label>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <RadioGroupItem value="float" id="format-float" />
+                        <Label htmlFor="format-float" className="text-xs font-medium cursor-pointer">
+                          Float (4 bytes)
+                        </Label>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <RadioGroupItem value="double" id="format-double" />
+                        <Label htmlFor="format-double" className="text-xs font-medium cursor-pointer">
+                          Double (8 bytes)
+                        </Label>
+                      </div>
+                    </RadioGroup>
+                    <p className="text-[10px] text-muted-foreground">
+                      {memoryFormat === 'byte' && "Stores 1 byte (0-255) at any address"}
+                      {memoryFormat === 'float' && "Stores 4 bytes - address must be divisible by 4"}
+                      {memoryFormat === 'double' && "Stores 8 bytes - address must be divisible by 8"}
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
                     <label className="text-sm font-medium">Memory Address</label>
                     <Input
                       type="number"
-                      placeholder="e.g., 20"
+                      placeholder={memoryFormat === 'float' ? "e.g., 0, 4, 8, 12..." : memoryFormat === 'double' ? "e.g., 0, 8, 16, 24..." : "e.g., 20"}
                       value={newAddress}
-                      onChange={(e) => setNewAddress(e.target.value)}
+                      onChange={(e) => {
+                        setNewAddress(e.target.value);
+                        setAddressError("");
+                        const addr = parseInt(e.target.value);
+                        if (!isNaN(addr)) {
+                          const error = validateAddress(addr);
+                          setAddressError(error);
+                        }
+                      }}
                       onKeyDown={(e) => {
                         if (e.key === '.' || e.key === ',') e.preventDefault();
                       }}
-                      className="font-mono"
+                      className={`font-mono ${addressError ? 'border-destructive' : ''}`}
                       min="0"
                     />
-                    <p className="text-[10px] text-muted-foreground">
-                      Enter the decimal address (e.g., 20 for address 0x14)
-                    </p>
+                    {addressError ? (
+                      <p className="text-[10px] text-destructive font-medium">⚠️ {addressError}</p>
+                    ) : (
+                      <p className="text-[10px] text-muted-foreground">
+                        {memoryFormat === 'float' && "Must be divisible by 4 (e.g., 0, 4, 8, 12, 16...)"}
+                        {memoryFormat === 'double' && "Must be divisible by 8 (e.g., 0, 8, 16, 24, 32...)"}
+                        {memoryFormat === 'byte' && "Enter the decimal address (e.g., 20 for address 0x14)"}
+                      </p>
+                    )}
                   </div>
                   
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Byte Value (0-255)</label>
+                    <label className="text-sm font-medium">
+                      {memoryFormat === 'byte' ? 'Byte Value (0-255)' : 'Decimal Value'}
+                    </label>
                     <MemoryByteInput
                       value={newValue}
                       onChange={setNewValue}
+                      allowDecimal={memoryFormat !== 'byte'}
                     />
                   </div>
                 </div>
@@ -110,12 +190,15 @@ export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete
                   <Button 
                     onClick={handleAddMemory} 
                     className="flex-1"
-                    disabled={!newAddress || newAddress === '' || parseInt(newAddress) < 0}
+                    disabled={!newAddress || newAddress === '' || parseInt(newAddress) < 0 || addressError !== ""}
                   >
                     Add to Memory
                   </Button>
                   <Button 
-                    onClick={() => setIsAddDialogOpen(false)} 
+                    onClick={() => {
+                      setIsAddDialogOpen(false);
+                      setAddressError("");
+                    }} 
                     variant="outline"
                     className="flex-1"
                   >
@@ -155,7 +238,10 @@ export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete
                       </TableCell>
                       <TableCell className="text-xs text-center font-mono px-2">
                         {isEditable ? (
-                          <Dialog open={editingAddress === address} onOpenChange={(open) => setEditingAddress(open ? address : null)}>
+                          <Dialog open={editingAddress === address} onOpenChange={(open) => {
+                            setEditingAddress(open ? address : null);
+                            if (open) setEditFormat('byte');
+                          }}>
                             <DialogTrigger asChild>
                               <Button 
                                 variant="outline" 
@@ -174,10 +260,40 @@ export const MemoryTable = ({ memory, isEditable, onMemoryChange, onMemoryDelete
                               </DialogHeader>
                               <div className="space-y-4 py-4">
                                 <div className="space-y-2">
-                                  <label className="text-sm font-medium">Byte Value (0-255)</label>
+                                  <label className="text-sm font-medium">Data Format</label>
+                                  <RadioGroup 
+                                    value={editFormat} 
+                                    onValueChange={(v) => setEditFormat(v as 'byte' | 'float' | 'double')}
+                                    className="flex gap-4"
+                                  >
+                                    <div className="flex items-center space-x-2">
+                                      <RadioGroupItem value="byte" id="edit-format-byte" />
+                                      <Label htmlFor="edit-format-byte" className="text-xs font-medium cursor-pointer">
+                                        Byte
+                                      </Label>
+                                    </div>
+                                    <div className="flex items-center space-x-2">
+                                      <RadioGroupItem value="float" id="edit-format-float" />
+                                      <Label htmlFor="edit-format-float" className="text-xs font-medium cursor-pointer">
+                                        Float
+                                      </Label>
+                                    </div>
+                                    <div className="flex items-center space-x-2">
+                                      <RadioGroupItem value="double" id="edit-format-double" />
+                                      <Label htmlFor="edit-format-double" className="text-xs font-medium cursor-pointer">
+                                        Double
+                                      </Label>
+                                    </div>
+                                  </RadioGroup>
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium">
+                                    {editFormat === 'byte' ? 'Byte Value (0-255)' : 'Decimal Value'}
+                                  </label>
                                   <MemoryByteInput
                                     value={value & 0xFF}
                                     onChange={(newVal) => handleValueChange(address, newVal)}
+                                    allowDecimal={editFormat !== 'byte'}
                                   />
                                 </div>
                               </div>

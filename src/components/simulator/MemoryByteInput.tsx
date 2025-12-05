@@ -9,10 +9,11 @@ interface MemoryByteInputProps {
   value: number;
   onChange: (value: number) => void;
   disabled?: boolean;
+  allowDecimal?: boolean; // Allow decimal format for float/double
 }
 
-export const MemoryByteInput = ({ value, onChange, disabled }: MemoryByteInputProps) => {
-  const [inputMode, setInputMode] = useState<'hex' | 'binary'>('hex');
+export const MemoryByteInput = ({ value, onChange, disabled, allowDecimal = false }: MemoryByteInputProps) => {
+  const [inputMode, setInputMode] = useState<'hex' | 'binary' | 'decimal'>(allowDecimal ? 'decimal' : 'hex');
   
   // Convert value (0-255) to 8-bit binary string
   const toBinaryString = (val: number): string => {
@@ -50,10 +51,18 @@ export const MemoryByteInput = ({ value, onChange, disabled }: MemoryByteInputPr
     <div className="space-y-3">
       <RadioGroup 
         value={inputMode} 
-        onValueChange={(v) => setInputMode(v as 'hex' | 'binary')}
+        onValueChange={(v) => setInputMode(v as 'hex' | 'binary' | 'decimal')}
         className="flex gap-4"
         disabled={disabled}
       >
+        {allowDecimal && (
+          <div className="flex items-center space-x-2">
+            <RadioGroupItem value="decimal" id="decimal" disabled={disabled} />
+            <Label htmlFor="decimal" className="text-xs font-medium cursor-pointer">
+              Decimal
+            </Label>
+          </div>
+        )}
         <div className="flex items-center space-x-2">
           <RadioGroupItem value="hex" id="hex" disabled={disabled} />
           <Label htmlFor="hex" className="text-xs font-medium cursor-pointer">
@@ -68,7 +77,24 @@ export const MemoryByteInput = ({ value, onChange, disabled }: MemoryByteInputPr
         </div>
       </RadioGroup>
       
-      {inputMode === 'hex' ? (
+      {inputMode === 'decimal' ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              step="any"
+              value={value}
+              onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+              className="w-full h-10 text-center text-lg font-mono font-bold bg-background border-2 border-primary/50"
+              disabled={disabled}
+              placeholder="Enter decimal value"
+            />
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Enter any decimal number (integer or floating-point)
+          </p>
+        </div>
+      ) : inputMode === 'hex' ? (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <div className="flex gap-1">
