@@ -290,7 +290,9 @@ export function initializeSimulatorState(
 
   const baseState: SimulatorState = {
     cycle: 0,
-    instructions,
+    instructions: [], // Start with empty - instructions added dynamically as issued
+    programInstructions: instructions, // Store original program
+    nextInstructionIndex: 0, // Start at first instruction
     reservationStations: {
       add: addStations,
       mul: mulStations,
@@ -357,17 +359,18 @@ export function executeSimulationStep(
   // PHASE 3: Issue (Try to issue next instruction)
   issuePhase(newState, config);
   
-  // Check completion
-  const allComplete = newState.instructions.every(
+  // Check completion: All issued instructions complete AND no more to issue
+  const allIssuedComplete = newState.instructions.every(
     inst => inst.writeResultCycle !== undefined
   );
+  const noMoreToIssue = newState.nextInstructionIndex >= newState.programInstructions.length;
   
   const completedCount = newState.instructions.filter(inst => inst.writeResultCycle !== undefined).length;
   const totalCount = newState.instructions.length;
   
   console.log(`Completion status: ${completedCount}/${totalCount} instructions completed`);
   
-  if (allComplete && newState.instructions.length > 0) {
+  if (allIssuedComplete && noMoreToIssue && newState.instructions.length > 0) {
     newState.isComplete = true;
     newState.isRunning = false;
     console.log("✓ SIMULATION COMPLETE - All instructions have written results");
@@ -694,6 +697,29 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
     }
     if ('stage' in broadcasting) {
       broadcasting.stage = 'ADDRESS_CALC';
+    }
+    
+    // Handle branch instructions (BNE, BEQ)
+    if (inst && (inst.type === 'BNE' || inst.type === 'BEQ')) {
+      const branchTaken = (inst.type === 'BNE' && value !== 0) || (inst.type === 'BEQ' && value === 0);
+      
+      if (branchTaken && inst.dest) {
+        // Branch is taken - find the label in program instructions
+        const labelToJumpTo = inst.dest;
+        const targetIndex = state.programInstructions.findIndex(pi => pi.label === labelToJumpTo);
+        
+        if (targetIndex !== -1) {
+          console.log(`  Branch taken! Jumping to label "${labelToJumpTo}" (program instruction ${targetIndex})`);
+          // Set next instruction to issue from the branch target
+          state.nextInstructionIndex = targetIndex;
+        } else {
+          console.warn(`  Branch target label "${labelToJumpTo}" not found in program`);
+        }
+      } else {
+        console.log(`  Branch not taken (continuing to next instruction)`);
+        // Branch not taken - continue with next instruction sequentially
+        // nextInstructionIndex will advance naturally in issue phase
+      }
     }
   }
 }
@@ -1043,14 +1069,27 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
 function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   console.log("PHASE 3: Issue");
   
-  // Find next instruction to issue
-  const nextInst = state.instructions.find(i => i.issueCycle === undefined);
-  if (!nextInst) {
-    const totalInstructions = state.instructions.length;
-    const issuedCount = state.instructions.filter(i => i.issueCycle !== undefined).length;
-    console.log(`  No more instructions to issue (${issuedCount}/${totalInstructions} issued)`);
+  // Check if there's a next instruction in the program to issue
+  if (state.nextInstructionIndex >= state.programInstructions.length) {
+    console.log(`  No more instructions to issue (reached end of program)`);
     return;
   }
+  
+  // Get the next instruction from the program
+  const programInst = state.programInstructions[state.nextInstructionIndex];
+  
+  // Create a new instruction entry for this issue (clone from program)
+  const nextId = state.instructions.length;
+  const nextInst: Instruction = {
+    id: nextId,
+    raw: programInst.raw,
+    type: programInst.type,
+    dest: programInst.dest,
+    src1: programInst.src1,
+    src2: programInst.src2,
+    immediate: programInst.immediate,
+    label: programInst.label,
+  };
   
   const type = nextInst.type;
   let targetStations: ReservationStation[] | LoadStoreBuffer[] = [];
@@ -1081,7 +1120,16 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   // Issue instruction
   const labelStr = nextInst.label ? `[${nextInst.label}] ` : '';
   console.log(`  Issuing instruction ${nextInst.id}: ${labelStr}${nextInst.raw} to ${freeStation.tag}`);
+  
+  // Add this instruction to the issued instructions list
+  state.instructions.push(nextInst);
+  
+  // Mark the instruction as issued
   nextInst.issueCycle = state.cycle;
+  
+  // Move to next instruction in program
+  state.nextInstructionIndex++;
+  
   freeStation.busy = true;
   
   if (isLoadStore) {

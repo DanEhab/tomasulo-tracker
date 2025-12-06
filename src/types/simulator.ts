@@ -98,7 +98,9 @@ export interface SimulatorConfig {
 
 export interface SimulatorState {
   cycle: number;
-  instructions: Instruction[];
+  instructions: Instruction[]; // Dynamically issued instructions (grows as instructions are issued/re-issued)
+  programInstructions: Instruction[]; // Original program instructions (static template)
+  nextInstructionIndex: number; // Index in programInstructions to issue next
   reservationStations: {
     add: ReservationStation[];
     mul: ReservationStation[];
