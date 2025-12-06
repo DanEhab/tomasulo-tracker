@@ -949,13 +949,33 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
           console.log(`  ${buf.tag} starting cache access (HIT): ${config.cache.hitLatency} cycles hit latency`);
         }
         
-        // Return here - don't start cache access in the same cycle we transition
-        return;
+        // If latency is 0, mark as ready for write back but wait for next cycle
+        if (buf.timeRemaining === 0) {
+          // Cache access instant, mark ready for write back
+          if (!hit) {
+            loadBlockIntoCache(buf.address, config, state);
+          }
+          buf.stage = 'WRITE_BACK';
+          console.log(`  ${buf.tag} cache access complete (instant), ready to write back`);
+          // Always return - write back happens in the next cycle
+          return;
+        } else {
+          // Return here - don't start cache access in the same cycle we transition
+          return;
+        }
       }
     }
     
     // STAGE 2: CACHE_ACCESS (Miss penalty or hit latency)
     if (buf.stage === 'CACHE_ACCESS') {
+      // Check if cache access is already complete (hit latency = 0)
+      if (buf.timeRemaining === 0) {
+        // Cache access complete, now write to memory and update cache
+        buf.stage = 'WRITE_BACK';
+        console.log(`  ${buf.tag} cache access complete, ready to write back`);
+        return;
+      }
+      
       const wasCacheHit = (buf as any).cacheHit;
       let cyclesUntilBlockLoaded = (buf as any).cyclesUntilBlockLoaded;
       
