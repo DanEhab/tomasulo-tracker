@@ -7,22 +7,56 @@ import {
   InstructionType 
 } from "@/types/simulator";
 
+// Global map to store BigInt values to preserve precision (avoids JSON serialization issues)
+// Key formats: 
+// - "reg:registerName" for register values (e.g., "reg:R2")
+// - "buf:tag" for load/store buffer values (e.g., "buf:Load1", "buf:Store1")
+const bigIntValues = new Map<string, bigint>();
+
 export function parseInstructions(code: string): Instruction[] {
   const lines = code.trim().split('\n').filter(line => line.trim() && !line.trim().startsWith('#'));
   
-  return lines.map((line, index) => {
-    const cleaned = line.trim().replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ');
+  const instructions = lines.map((line, index) => {
+    // Handle labels: "LABEL: INSTRUCTION" -> extract label and parse instruction
+    let label: string | undefined;
+    let instructionPart = line.trim();
+    
+    if (instructionPart.includes(':')) {
+      const colonIndex = instructionPart.indexOf(':');
+      label = instructionPart.substring(0, colonIndex).trim();
+      instructionPart = instructionPart.substring(colonIndex + 1).trim();
+      console.log(`Parsing line ${index}: Found label "${label}", instruction: "${instructionPart}"`);
+    }
+    
+    const cleaned = instructionPart.replace(/,/g, ' ').replace(/\(/g, ' ').replace(/\)/g, ' ').replace(/#/g, '');
     const parts = cleaned.split(/\s+/).filter(p => p);
-    const type = parts[0].toUpperCase() as InstructionType;
+    console.log(`Parsing line ${index}: "${line}" -> parts:`, parts);
+    // Handle split opcode tokens like "L. D" or "ADD. D" by merging
+    let opcode = parts[0].toUpperCase();
+    if (opcode.endsWith('.') && parts.length > 1 && parts[1].length === 1) {
+      opcode = (opcode + parts[1].toUpperCase());
+      parts[0] = opcode; // update the opcode in place
+      parts.splice(1, 1); // remove the next token as it's merged into opcode
+      console.log(`  After merge: parts:`, parts);
+    }
+    const type = opcode as InstructionType;
     
     // Handle different instruction formats
     let dest, src1, src2, immediate;
     
-    if (type.startsWith('L') || type.startsWith('S')) {
+    const isLoadStore = (type.startsWith('L') || type.startsWith('S')) && 
+                        !type.includes('SUB') && !type.includes('ADD');
+    
+    if (isLoadStore) {
       // Load/Store: L.D F0, 32(R2) -> dest=F0, immediate=32, src1=R2
+      // Match: L.D, LD, S.D, SD, SW, S.S, but NOT SUB.D, ADD.D, etc.
+      // After potential opcode merge, format is: [OPCODE, DEST, IMM, BASE]
       dest = parts[1];
       immediate = parseFloat(parts[2]) || 0;
       src1 = parts[3];
+      
+      // Validate load instruction format and register types
+      validateLoadStoreInstruction(type, dest, src1, line, index);
     } else if (type === 'DADDI' || type === 'DSUBI') {
       // Immediate: DADDI R1, R2, 100 -> dest=R1, src1=R2, immediate=100
       dest = parts[1];
@@ -34,7 +68,7 @@ export function parseInstructions(code: string): Instruction[] {
       src2 = parts[2];
       dest = parts[3]; // label
     } else {
-      // Regular: ADD.D F0, F2, F4 -> dest=F0, src1=F2, src2=F4
+      // Regular FP ops: ADD.D F0, F2, F4 -> dest=F0, src1=F2, src2=F4
       dest = parts[1];
       src1 = parts[2];
       src2 = parts[3];
@@ -48,8 +82,134 @@ export function parseInstructions(code: string): Instruction[] {
       src1,
       src2,
       immediate,
+      label,
     };
   });
+  
+  // Validate: Check if any instruction tries to write to R0
+  const r0WriteInstructions = instructions.filter(inst => 
+    inst.dest && inst.dest.toUpperCase() === 'R0'
+  );
+  
+  if (r0WriteInstructions.length > 0) {
+    const errorLines = r0WriteInstructions.map(inst => `Line ${inst.id + 1}: ${inst.raw}`).join('\n');
+    throw new Error(`Cannot write to R0 register (always 0):\n${errorLines}`);
+  }
+  
+  // Debug: Log parsed instruction list
+  console.log(`\n=== PARSED ${instructions.length} INSTRUCTIONS ===`);
+  instructions.forEach(inst => {
+    const labelStr = inst.label ? `[${inst.label}] ` : '';
+    console.log(`  ${inst.id}: ${labelStr}${inst.type} ${inst.dest || ''} ${inst.src1 || ''} ${inst.src2 || ''} ${inst.immediate !== undefined ? inst.immediate : ''}`);
+  });
+  console.log('=================================\n');
+  
+  return instructions;
+}
+
+/**
+ * Validate load/store instruction format and register types
+ */
+function validateLoadStoreInstruction(
+  type: InstructionType,
+  dest: string | undefined,
+  src1: string | undefined,
+  line: string,
+  lineIndex: number
+): void {
+  const lineNum = lineIndex + 1;
+  
+  if (!dest) {
+    throw new Error(`Line ${lineNum}: Missing destination register in instruction:\n"${line}"\n\nExpected format: ${type} <dest>, <offset>(<base_reg>)`);
+  }
+  
+  if (!src1) {
+    throw new Error(`Line ${lineNum}: Missing base register in instruction:\n"${line}"\n\nExpected format: ${type} <dest>, <offset>(<base_reg>)`);
+  }
+  
+  const destUpper = dest.toUpperCase();
+  const src1Upper = src1.toUpperCase();
+  
+  // Check if registers are properly formatted
+  const isDestR = /^R([0-9]|[1-2][0-9]|3[0-1])$/.test(destUpper);
+  const isDestF = /^F([0-9]|[1-2][0-9]|3[0-1])$/.test(destUpper);
+  const isSrc1R = /^R([0-9]|[1-2][0-9]|3[0-1])$/.test(src1Upper);
+  
+  // Validate base register (must always be R0-R31)
+  if (!isSrc1R) {
+    throw new Error(
+      `Line ${lineNum}: Invalid base register "${src1}" in instruction:\n"${line}"\n\n` +
+      `Base register must be an integer register R0-R31.\n` +
+      `Expected format: ${type} <dest>, <offset>(R0-R31)`
+    );
+  }
+  
+  // Validate LW and LD instructions
+  if (type === 'LW' || type === 'LD') {
+    // Must use R registers (R1-R31, not R0) as destination
+    if (!isDestR) {
+      throw new Error(
+        `Line ${lineNum}: Invalid destination register "${dest}" for ${type} instruction:\n"${line}"\n\n` +
+        `${type} loads integers and must write to an integer register (R1-R31).\n` +
+        `You cannot use floating-point registers (F0-F31) with ${type}.\n\n` +
+        `Correct format: ${type} R1-R31, <offset>(R0-R31)\n` +
+        `Example: ${type} R5, 20(R0)`
+      );
+    }
+    
+    // Cannot write to R0
+    if (destUpper === 'R0') {
+      throw new Error(
+        `Line ${lineNum}: Cannot write to R0 in instruction:\n"${line}"\n\n` +
+        `R0 is a constant register that always contains 0.\n` +
+        `Use R1-R31 as the destination.\n\n` +
+        `Correct format: ${type} R1-R31, <offset>(R0-R31)\n` +
+        `Example: ${type} R5, 20(R0)`
+      );
+    }
+  }
+  
+  // Validate L.S and L.D instructions
+  if (type === 'L.S' || type === 'L.D') {
+    // Must use F registers (F0-F31) as destination
+    if (!isDestF) {
+      throw new Error(
+        `Line ${lineNum}: Invalid destination register "${dest}" for ${type} instruction:\n"${line}"\n\n` +
+        `${type} loads floating-point values and must write to a floating-point register (F0-F31).\n` +
+        `You cannot use integer registers (R0-R31) with ${type}.\n\n` +
+        `Correct format: ${type} F0-F31, <offset>(R0-R31)\n` +
+        `Example: ${type} F5, 20(R0)`
+      );
+    }
+  }
+  
+  // Validate SW and SD instructions
+  if (type === 'SW' || type === 'SD') {
+    // Must use R registers as source
+    if (!isDestR) {
+      throw new Error(
+        `Line ${lineNum}: Invalid source register "${dest}" for ${type} instruction:\n"${line}"\n\n` +
+        `${type} stores integers and must read from an integer register (R0-R31).\n` +
+        `You cannot use floating-point registers (F0-F31) with ${type}.\n\n` +
+        `Correct format: ${type} R0-R31, <offset>(R0-R31)\n` +
+        `Example: ${type} R5, 20(R0)`
+      );
+    }
+  }
+  
+  // Validate S.S and S.D instructions
+  if (type === 'S.S' || type === 'S.D') {
+    // Must use F registers as source
+    if (!isDestF) {
+      throw new Error(
+        `Line ${lineNum}: Invalid source register "${dest}" for ${type} instruction:\n"${line}"\n\n` +
+        `${type} stores floating-point values and must read from a floating-point register (F0-F31).\n` +
+        `You cannot use integer registers (R0-R31) with ${type}.\n\n` +
+        `Correct format: ${type} F0-F31, <offset>(R0-R31)\n` +
+        `Example: ${type} F5, 20(R0)`
+      );
+    }
+  }
 }
 
 export function initializeSimulatorState(
@@ -80,12 +240,27 @@ export function initializeSimulatorState(
     timeRemaining: 0,
   }));
 
+  const intAddStations: ReservationStation[] = Array.from({ length: config.reservationStations.intAdders }, (_, i) => ({
+    tag: `IntAdd${i + 1}`,
+    busy: false,
+    op: "",
+    vj: null,
+    vk: null,
+    qj: null,
+    qk: null,
+    a: null,
+    timeRemaining: 0,
+  }));
+
   const loadBuffers: LoadStoreBuffer[] = Array.from({ length: config.reservationStations.loadBuffers }, (_, i) => ({
     tag: `Load${i + 1}`,
     busy: false,
     address: null,
     value: null,
     timeRemaining: 0,
+    baseRegisterTag: null,
+    storeValueTag: null,
+    stage: 'ADDRESS_CALC' as const,
   }));
 
   const storeBuffers: LoadStoreBuffer[] = Array.from({ length: config.reservationStations.storeBuffers }, (_, i) => ({
@@ -94,6 +269,9 @@ export function initializeSimulatorState(
     address: null,
     value: null,
     timeRemaining: 0,
+    baseRegisterTag: null,
+    storeValueTag: null,
+    stage: 'ADDRESS_CALC' as const,
   }));
 
   const intRegisters = Array.from({ length: 32 }, (_, i) => ({
@@ -110,12 +288,15 @@ export function initializeSimulatorState(
     type: 'FLOAT' as const,
   }));
 
-  return {
+  const baseState: SimulatorState = {
     cycle: 0,
-    instructions,
+    instructions: [], // Start with empty - instructions added dynamically as issued
+    programInstructions: instructions, // Store original program
+    nextInstructionIndex: 0, // Start at first instruction
     reservationStations: {
       add: addStations,
       mul: mulStations,
+      intAdd: intAddStations,
     },
     loadStoreBuffers: {
       load: loadBuffers,
@@ -129,20 +310,48 @@ export function initializeSimulatorState(
     cache: new Map(),
     isRunning: false,
     isComplete: false,
+    memoryWrites: new Map(),
   };
+
+  // Apply optional initial registers
+  if (config.initialRegisters) {
+    Object.entries(config.initialRegisters).forEach(([name, value]) => {
+      const reg = [...baseState.registers.int, ...baseState.registers.float]
+        .find(r => r.name.toUpperCase() === name.toUpperCase());
+      if (reg) {
+        reg.value = value;
+      }
+    });
+  }
+
+  // Apply optional initial memory
+  if (config.initialMemory) {
+    config.initialMemory.forEach(({ address, value }) => {
+      baseState.memory.set(address, value);
+    });
+  }
+
+  return baseState;
 }
 
 export function executeSimulationStep(
   state: SimulatorState,
   config: SimulatorConfig
 ): SimulatorState {
-  const newState = JSON.parse(JSON.stringify(state)); // Deep clone
+  // Deep clone with proper Map handling
+  const newState = JSON.parse(JSON.stringify(state));
+  
+  // Restore Map objects (JSON.stringify converts Maps to empty objects)
+  newState.memory = new Map(state.memory);
+  newState.cache = new Map(state.cache);
+  newState.memoryWrites = new Map(state.memoryWrites || new Map());
+  
   newState.cycle = state.cycle + 1;
   
   console.log(`\n=== CYCLE ${newState.cycle} ===`);
   
   // PHASE 1: Write Result (CDB Broadcast)
-  writeResultPhase(newState);
+  writeResultPhase(newState, config);
   
   // PHASE 2: Execute (Decrement time for ready operations)
   executePhase(newState, config);
@@ -150,26 +359,152 @@ export function executeSimulationStep(
   // PHASE 3: Issue (Try to issue next instruction)
   issuePhase(newState, config);
   
-  // Check completion
-  const allComplete = newState.instructions.every(
+  // Check completion: All issued instructions complete AND no more to issue
+  const allIssuedComplete = newState.instructions.every(
     inst => inst.writeResultCycle !== undefined
   );
+  const noMoreToIssue = newState.nextInstructionIndex >= newState.programInstructions.length;
   
-  if (allComplete && newState.instructions.length > 0) {
+  const completedCount = newState.instructions.filter(inst => inst.writeResultCycle !== undefined).length;
+  const totalCount = newState.instructions.length;
+  
+  console.log(`Completion status: ${completedCount}/${totalCount} instructions completed`);
+  
+  if (allIssuedComplete && noMoreToIssue && newState.instructions.length > 0) {
     newState.isComplete = true;
     newState.isRunning = false;
-    console.log("✓ SIMULATION COMPLETE");
+    console.log("✓ SIMULATION COMPLETE - All instructions have written results");
   }
   
   return newState;
 }
 
-function writeResultPhase(state: SimulatorState): void {
+/**
+ * Compute the result of an arithmetic operation
+ */
+function computeResult(rs: ReservationStation): number {
+  let vj = rs.vj !== null ? rs.vj : 0;
+  let vk = rs.vk !== null ? rs.vk : 0;
+  const op = rs.op;
+  
+  // For single-precision operations, treat operands as 32-bit floats
+  const isSinglePrecision = op.includes('.S');
+  if (isSinglePrecision) {
+    vj = Math.fround(vj);
+    vk = Math.fround(vk);
+  }
+  
+  console.log(`    Computing: ${op} with Vj=${vj}, Vk=${vk}`);
+  
+  let result: number;
+  
+  // Floating-point operations
+  if (op.includes('ADD')) {
+    result = vj + vk;
+    // Single-precision: round result to 32-bit float precision
+    if (isSinglePrecision) {
+      result = Math.fround(result);
+    }
+    return result;
+  } else if (op.includes('SUB')) {
+    result = vj - vk;
+    // Single-precision: round result to 32-bit float precision
+    if (isSinglePrecision) {
+      result = Math.fround(result);
+    }
+    return result;
+  } else if (op.includes('MUL')) {
+    result = vj * vk;
+    // Single-precision: round result to 32-bit float precision
+    if (isSinglePrecision) {
+      result = Math.fround(result);
+    }
+    return result;
+  } else if (op.includes('DIV')) {
+    if (vk === 0) {
+      console.warn(`    Division by zero! Returning 0`);
+      return 0;
+    }
+    result = vj / vk;
+    // Single-precision: round result to 32-bit float precision
+    if (isSinglePrecision) {
+      result = Math.fround(result);
+    }
+    return result;
+  } else if (op === 'DADDI') {
+    // Integer add immediate: Vj + Vk (immediate is in Vk)
+    return vj + vk;
+  } else if (op === 'DSUBI') {
+    // Integer subtract immediate: Vj - Vk (immediate is in Vk)
+    return vj - vk;
+  } else if (op === 'BNE') {
+    // Branch if not equal: return 1 if Vj != Vk, else 0
+    return vj !== vk ? 1 : 0;
+  } else if (op === 'BEQ') {
+    // Branch if equal: return 1 if Vj == Vk, else 0
+    return vj === vk ? 1 : 0;
+  }
+  
+  console.warn(`    Unknown operation ${op}, returning Vj`);
+  return vj;
+}
+
+/**
+ * Count how many reservation stations are waiting for this tag
+ */
+function countFanOut(
+  tag: string,
+  allStations: ReservationStation[],
+  loadStoreBuffers: { load: LoadStoreBuffer[]; store: LoadStoreBuffer[] }
+): number {
+  let count = 0;
+  
+  // Check reservation stations
+  allStations.forEach(rs => {
+    if (rs.busy && (rs.qj === tag || rs.qk === tag)) {
+      count++;
+    }
+  });
+  
+  // Check load/store buffers
+  [...loadStoreBuffers.load, ...loadStoreBuffers.store].forEach(buf => {
+    if (buf.busy && (buf.baseRegisterTag === tag || buf.storeValueTag === tag)) {
+      count++;
+    }
+  });
+  
+  return count;
+}
+
+/**
+ * Get the longest latency of instructions waiting for this tag
+ */
+function getCriticalPath(
+  tag: string,
+  allStations: ReservationStation[],
+  config: SimulatorConfig
+): number {
+  let maxLatency = 0;
+  
+  allStations.forEach(rs => {
+    if (rs.busy && (rs.qj === tag || rs.qk === tag)) {
+      const latency = getInstructionLatency(rs.op as InstructionType, config);
+      if (latency > maxLatency) {
+        maxLatency = latency;
+      }
+    }
+  });
+  
+  return maxLatency;
+}
+
+function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void {
   console.log("PHASE 1: Write Result");
   
   const allStations = [
     ...state.reservationStations.add,
-    ...state.reservationStations.mul
+    ...state.reservationStations.mul,
+    ...state.reservationStations.intAdd
   ];
   
   // Find stations that finished execution
@@ -177,29 +512,107 @@ function writeResultPhase(state: SimulatorState): void {
     rs => rs.busy && rs.timeRemaining === 0
   );
   
-  // Also check load buffers
+  // Also check load buffers that completed
+  // Loads only broadcast when stage is COMPLETED (set by execute phase when timeRemaining reaches 0)
   const finishedLoads = state.loadStoreBuffers.load.filter(
-    buf => buf.busy && buf.timeRemaining === 0
+    buf => buf.busy && buf.stage === 'COMPLETED'
   );
   
-  // CDB can only broadcast one result per cycle (first come first serve)
+  // CDB can only broadcast one result per cycle
   const allFinished = [...finishedStations, ...finishedLoads];
   
   if (allFinished.length > 0) {
+    // Select winner based on mode
+    if (config.isOptimizationMode) {
+      // Heuristic arbitration: fan-out, critical path, then oldest
+      allFinished.sort((a, b) => {
+        const tagA = a.tag;
+        const tagB = b.tag;
+        
+        // 1. Calculate fan-out (how many RS are waiting for this tag)
+        const fanOutA = countFanOut(tagA, allStations, state.loadStoreBuffers);
+        const fanOutB = countFanOut(tagB, allStations, state.loadStoreBuffers);
+        
+        if (fanOutA !== fanOutB) {
+          return fanOutB - fanOutA; // Higher fan-out first
+        }
+        
+        // 2. Critical path (longest latency of dependent instructions)
+        const criticalPathA = getCriticalPath(tagA, allStations, config);
+        const criticalPathB = getCriticalPath(tagB, allStations, config);
+        
+        if (criticalPathA !== criticalPathB) {
+          return criticalPathB - criticalPathA; // Longer critical path first
+        }
+        
+        // 3. Tie-breaker: oldest instruction
+        const instIdA = ('instructionId' in a && a.instructionId !== undefined) 
+          ? a.instructionId 
+          : (a as LoadStoreBuffer).instructionId;
+        const instIdB = ('instructionId' in b && b.instructionId !== undefined) 
+          ? b.instructionId 
+          : (b as LoadStoreBuffer).instructionId;
+        
+        const instA = state.instructions.find(i => i.id === instIdA);
+        const instB = state.instructions.find(i => i.id === instIdB);
+        
+        const issueA = instA?.issueCycle ?? Infinity;
+        const issueB = instB?.issueCycle ?? Infinity;
+        return issueA - issueB;
+      });
+    } else {
+      // Default: oldest instruction first
+      allFinished.sort((a, b) => {
+        const instIdA = ('instructionId' in a && a.instructionId !== undefined) 
+          ? a.instructionId 
+          : (a as LoadStoreBuffer).instructionId;
+        const instIdB = ('instructionId' in b && b.instructionId !== undefined) 
+          ? b.instructionId 
+          : (b as LoadStoreBuffer).instructionId;
+        
+        const instA = state.instructions.find(i => i.id === instIdA);
+        const instB = state.instructions.find(i => i.id === instIdB);
+        
+        const issueA = instA?.issueCycle ?? Infinity;
+        const issueB = instB?.issueCycle ?? Infinity;
+        return issueA - issueB;
+      });
+    }
+    
     const broadcasting = allFinished[0];
     const tag = broadcasting.tag;
-    const value = 'value' in broadcasting ? broadcasting.value : 
-                  (broadcasting.vj !== null ? broadcasting.vj : 0);
     
-    console.log(`  CDB Broadcasting: ${tag} = ${value}`);
+    // Loads in MEMORY_ACCESS stage will be completed by the execute phase when timeRemaining reaches 0
+    // The write result phase should not prematurely complete loads
     
-    // Update instruction status
-    const inst = state.instructions.find(i => 
-      i.issueCycle !== undefined && i.writeResultCycle === undefined &&
-      (i.dest === tag || state.registers.float.find(r => r.name === i.dest && r.qi === tag) ||
-       state.registers.int.find(r => r.name === i.dest && r.qi === tag))
-    );
-    if (inst) {
+    // Calculate the actual result based on operation
+    let value: number;
+    let bigIntValue: bigint | undefined;
+    
+    if ('value' in broadcasting) {
+      // Load buffer - value already computed
+      value = broadcasting.value !== null ? broadcasting.value : 0;
+      // Check if there's a BigInt value stored for this load (for LD instructions)
+      const bufKey = `buf:${tag}`;
+      bigIntValue = bigIntValues.get(bufKey);
+    } else {
+      // Reservation station - compute result
+      const rs = broadcasting as ReservationStation;
+      value = computeResult(rs);
+    }
+    
+    console.log(`  CDB Broadcasting: ${tag} = ${value}${bigIntValue ? ` (BigInt: 0x${bigIntValue.toString(16)})` : ''}`);
+    
+    // Update instruction status using instructionId
+    let inst: typeof state.instructions[0] | undefined;
+    if ('instructionId' in broadcasting && broadcasting.instructionId !== undefined) {
+      inst = state.instructions.find(i => i.id === broadcasting.instructionId);
+    } else {
+      // Fallback for load buffers
+      inst = state.instructions.find(i => i.id === (broadcasting as LoadStoreBuffer).instructionId);
+    }
+    
+    if (inst && inst.writeResultCycle === undefined) {
       inst.writeResultCycle = state.cycle;
       console.log(`  Instruction ${inst.id} (${inst.raw}) completed`);
     }
@@ -209,31 +622,69 @@ function writeResultPhase(state: SimulatorState): void {
       if (reg.qi === tag) {
         reg.value = value || 0;
         reg.qi = null;
-        console.log(`  Register ${reg.name} updated to ${reg.value}`);
+        // Store BigInt value for LD instructions to R registers
+        if (bigIntValue !== undefined && reg.type === 'INT') {
+          const key = `reg:${reg.name}`;
+          bigIntValues.set(key, bigIntValue);
+          console.log(`  Register ${reg.name} updated to ${reg.value} (exact: 0x${bigIntValue.toString(16)})`);
+        } else {
+          console.log(`  Register ${reg.name} updated to ${reg.value}`);
+        }
+      } else if (inst && reg.name === inst.dest && reg.qi !== null && reg.qi !== tag) {
+        // WAW hazard: This instruction writes to this register, but register was renamed by a later instruction
+        // Update the value but keep the qi pointing to the later instruction
+        reg.value = value || 0;
+        if (bigIntValue !== undefined && reg.type === 'INT') {
+          const key = `reg:${reg.name}`;
+          bigIntValues.set(key, bigIntValue);
+        }
+        console.log(`  Register ${reg.name} value updated to ${reg.value} (WAW: qi still ${reg.qi})`);
       }
     });
     
     // Update all RS waiting for this tag
     allStations.forEach(rs => {
+      let wasWaitingForThis = false;
       if (rs.qj === tag) {
         rs.vj = value || 0;
         rs.qj = null;
+        wasWaitingForThis = true;
       }
       if (rs.qk === tag) {
         rs.vk = value || 0;
         rs.qk = null;
+        wasWaitingForThis = true;
+      }
+      // Mark when operands became ready (only if THIS broadcast made both operands ready)
+      if (wasWaitingForThis && rs.busy && rs.qj === null && rs.qk === null && rs.operandsReadyCycle === undefined) {
+        rs.operandsReadyCycle = state.cycle;
       }
     });
     
-    // Update store buffers waiting for value
-    state.loadStoreBuffers.store.forEach(buf => {
-      if (buf.busy && buf.value === null) {
-        const srcReg = state.instructions.find(i => 
-          buf.tag.includes('Store') && i.dest && 
-          [...state.registers.float, ...state.registers.int].find(r => r.qi === tag)
-        );
-        if (srcReg) {
+    // Update load/store buffers waiting for base register or store value
+    [...state.loadStoreBuffers.load, ...state.loadStoreBuffers.store].forEach(buf => {
+      if (buf.busy) {
+        // Update base register dependency
+        if (buf.baseRegisterTag === tag) {
+          const inst = state.instructions.find(i => i.id === buf.instructionId);
+          const offset = inst?.immediate || 0;
+          buf.address = (value || 0) + offset;
+          buf.baseRegisterTag = null;
+          console.log(`  ${buf.tag} base register resolved, address: ${buf.address}`);
+        }
+        
+        // Update store value dependency
+        if (buf.storeValueTag === tag) {
           buf.value = value || 0;
+          // Also copy BigInt value if available (for SD instructions storing from R registers)
+          if (bigIntValue !== undefined) {
+            const bufKey = `buf:${buf.tag}`;
+            bigIntValues.set(bufKey, bigIntValue);
+          }
+          buf.storeValueTag = null;
+          // Track when store value became ready to prevent execution in same cycle
+          buf.operandsReadyCycle = state.cycle;
+          console.log(`  ${buf.tag} store value resolved: ${buf.value}${bigIntValue ? ` (BigInt: 0x${bigIntValue.toString(16)})` : ''}`);
         }
       }
     });
@@ -241,6 +692,35 @@ function writeResultPhase(state: SimulatorState): void {
     // Free the broadcasting unit
     broadcasting.busy = false;
     broadcasting.timeRemaining = 0;
+    if ('instructionId' in broadcasting) {
+      broadcasting.instructionId = undefined;
+    }
+    if ('stage' in broadcasting) {
+      broadcasting.stage = 'ADDRESS_CALC';
+    }
+    
+    // Handle branch instructions (BNE, BEQ)
+    if (inst && (inst.type === 'BNE' || inst.type === 'BEQ')) {
+      const branchTaken = (inst.type === 'BNE' && value !== 0) || (inst.type === 'BEQ' && value !== 0);
+      
+      if (branchTaken && inst.dest) {
+        // Branch is taken - find the label in program instructions
+        const labelToJumpTo = inst.dest;
+        const targetIndex = state.programInstructions.findIndex(pi => pi.label === labelToJumpTo);
+        
+        if (targetIndex !== -1) {
+          console.log(`  Branch taken! Jumping to label "${labelToJumpTo}" (program instruction ${targetIndex})`);
+          // Set next instruction to issue from the branch target
+          state.nextInstructionIndex = targetIndex;
+        } else {
+          console.warn(`  Branch target label "${labelToJumpTo}" not found in program`);
+        }
+      } else {
+        console.log(`  Branch not taken (continuing to next instruction)`);
+        // Branch not taken - continue with next instruction sequentially
+        // nextInstructionIndex will advance naturally in issue phase
+      }
+    }
   }
 }
 
@@ -249,21 +729,24 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
   
   const allStations = [
     ...state.reservationStations.add,
-    ...state.reservationStations.mul
+    ...state.reservationStations.mul,
+    ...state.reservationStations.intAdd
   ];
   
   // Execute in reservation stations
   allStations.forEach(rs => {
     if (rs.busy && rs.qj === null && rs.qk === null && rs.timeRemaining > 0) {
+      // Don't execute in the same cycle operands became ready
+      if (rs.operandsReadyCycle !== undefined && rs.operandsReadyCycle === state.cycle) {
+        console.log(`  ${rs.tag} operands just became ready, waiting until next cycle to execute`);
+        return;
+      }
+      
       rs.timeRemaining--;
       console.log(`  ${rs.tag} executing: ${rs.timeRemaining} cycles remaining`);
       
       // Update instruction exec timing
-      const inst = state.instructions.find(i => {
-        const destReg = [...state.registers.float, ...state.registers.int]
-          .find(r => r.name === i.dest);
-        return destReg && destReg.qi === rs.tag && i.execStartCycle === undefined;
-      });
+      const inst = state.instructions.find(i => i.id === rs.instructionId);
       if (inst && inst.execStartCycle === undefined) {
         inst.execStartCycle = state.cycle;
         inst.execEndCycle = state.cycle + rs.timeRemaining;
@@ -271,30 +754,314 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
     }
   });
   
-  // Execute in load buffers
+  // Execute LOAD buffers with proper stages
   state.loadStoreBuffers.load.forEach(buf => {
-    if (buf.busy && buf.timeRemaining > 0) {
-      buf.timeRemaining--;
-      console.log(`  ${buf.tag} executing: ${buf.timeRemaining} cycles remaining`);
+    if (!buf.busy) return;
+    
+    const inst = state.instructions.find(i => i.id === buf.instructionId);
+    
+    // STAGE 1: Address Calculation
+    if (buf.stage === 'ADDRESS_CALC') {
+      // Wait for base register if needed
+      if (buf.baseRegisterTag !== null) {
+        console.log(`  ${buf.tag} waiting for base register from ${buf.baseRegisterTag}`);
+        return;
+      }
+      
+      // Execute address calculation (takes LOAD latency cycles)
+      if (buf.timeRemaining > 0) {
+        // Set exec start cycle on first execution
+        if (inst && inst.execStartCycle === undefined) {
+          inst.execStartCycle = state.cycle;
+        }
+        
+        buf.timeRemaining--;
+        console.log(`  ${buf.tag} calculating address: ${buf.timeRemaining} cycles remaining`);
+        
+        // If still calculating, wait for next cycle
+        if (buf.timeRemaining > 0) {
+          return;
+        }
+        
+        // timeRemaining just reached 0, address calculation completes this cycle
+        // Fall through to calculate address and set execEndCycle
+      }
+      
+      // Address calculation complete (timeRemaining === 0)
+      // Calculate the address if not already done
+      if (buf.address === null) {
+        const allRegs = [...state.registers.int, ...state.registers.float];
+        const baseReg = allRegs.find(r => r.name === inst?.src1);
+        const offset = inst?.immediate || 0;
+        
+        if (baseReg) {
+          buf.address = baseReg.value + offset;
+        } else {
+          buf.address = offset;
+        }
+        
+        console.log(`  ${buf.tag} address calculation complete: ${buf.address}`);
+        
+        // Set exec end cycle - execution (address calculation) is complete
+        if (inst && inst.execEndCycle === undefined) {
+          inst.execEndCycle = state.cycle;
+        }
+      }
+      
+      // Check for memory conflicts with older stores (RAW hazards)
+      if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, true, config.cache.blockSize, state.cycle)) {
+        console.log(`  ${buf.tag} blocked by memory conflict (RAW hazard)`);
+        return;
+      }
+      
+      // Check if any earlier stores are pending to the same cache block
+      // Load must wait until those stores complete their write-back
+      if (hasPendingStoresToSameBlock(buf, state.loadStoreBuffers.store, state.instructions, config.cache.blockSize)) {
+        // Stall - don't transition to memory access yet
+        // Don't reset timeRemaining, just return and check again next cycle
+        return;
+      }
+      
+      // No conflicts, proceed to memory access
+      // Check cache (but don't load block yet)
+      const { latency, hit } = accessCache(buf.address, config, state, getLoadSize(inst?.type));
+      buf.timeRemaining = latency;
+      buf.stage = 'MEMORY_ACCESS';
+      
+      // Store whether this was a hit or miss, and when to load the block
+      (buf as any).cacheHit = hit;
+      // For cache miss, block should appear after miss penalty (not including hit latency)
+      (buf as any).cyclesUntilBlockLoaded = hit ? 0 : config.cache.missLatency;
+      
+      console.log(`  ${buf.tag} starting memory access (${hit ? 'HIT' : 'MISS'}): ${latency} cycles`);
+      
+      // If latency is 0, complete immediately
+      if (latency === 0) {
+        if (!hit) {
+          loadBlockIntoCache(buf.address, config, state);
+        }
+        const loadResult = loadValueFromMemory(buf.address, inst?.type, state.memory);
+        buf.value = loadResult.value;
+        if (loadResult.bigIntValue !== undefined) {
+          const bufKey = `buf:${buf.tag}`;
+          bigIntValues.set(bufKey, loadResult.bigIntValue);
+        }
+        buf.stage = 'COMPLETED';
+        console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address} (instant)`);
+      }
+      
+      // Return here - don't decrement in the same cycle we transition
+      return;
+    }
+    
+    // STAGE 2: Memory Access (cache access after execution completes)
+    if (buf.stage === 'MEMORY_ACCESS') {
+      if (buf.timeRemaining > 0) {
+        buf.timeRemaining--;
+        
+        // Check if we should load the block into cache (after miss penalty only, not hit latency)
+        const wasCacheHit = (buf as any).cacheHit;
+        let cyclesUntilBlockLoaded = (buf as any).cyclesUntilBlockLoaded;
+        
+        if (!wasCacheHit && cyclesUntilBlockLoaded !== undefined) {
+          cyclesUntilBlockLoaded--;
+          (buf as any).cyclesUntilBlockLoaded = cyclesUntilBlockLoaded;
+          
+          if (cyclesUntilBlockLoaded === 0 && buf.address !== null) {
+            // Miss penalty complete - load block into cache now
+            loadBlockIntoCache(buf.address, config, state);
+          }
+        }
+        
+        console.log(`  ${buf.tag} memory access: ${buf.timeRemaining} cycles remaining`);
+      }
       
       if (buf.timeRemaining === 0 && buf.address !== null) {
-        // Load completes - fetch from memory
-        buf.value = state.memory.get(buf.address) || 0;
+        // Cache access completes (miss penalty + hit latency)
+        // Fetch value from memory
+        const loadResult = loadValueFromMemory(buf.address, inst?.type, state.memory);
+        buf.value = loadResult.value;
+        if (loadResult.bigIntValue !== undefined) {
+          const bufKey = `buf:${buf.tag}`;
+          bigIntValues.set(bufKey, loadResult.bigIntValue);
+        }
+        buf.stage = 'COMPLETED';
+        
+        console.log(`  ${buf.tag} loaded value ${buf.value} from address ${buf.address}`);
       }
     }
   });
   
-  // Execute in store buffers
+  // Execute STORE buffers with proper stages
   state.loadStoreBuffers.store.forEach(buf => {
-    if (buf.busy && buf.value !== null && buf.address !== null && buf.timeRemaining > 0) {
+    if (!buf.busy) return;
+    
+    const inst = state.instructions.find(i => i.id === buf.instructionId);
+    
+    // STAGE 1: EXECUTING (Store Latency - address calc + operand ready)
+    if (buf.stage === 'EXECUTING') {
+      // Wait for base register if needed
+      if (buf.baseRegisterTag !== null) {
+        console.log(`  ${buf.tag} waiting for base register from ${buf.baseRegisterTag}`);
+        return;
+      }
+      
+      // Wait for store value if needed
+      if (buf.storeValueTag !== null) {
+        console.log(`  ${buf.tag} waiting for store value from ${buf.storeValueTag}`);
+        return;
+      }
+      
+      // Don't execute in the same cycle operands became ready
+      if (buf.operandsReadyCycle !== undefined && buf.operandsReadyCycle === state.cycle) {
+        console.log(`  ${buf.tag} operands just became ready, waiting until next cycle to execute`);
+        return;
+      }
+      
+      // Operands ready, execute for store latency cycles
+      if (buf.address !== null && buf.value !== null) {
+        if (buf.timeRemaining > 0) {
+          // Set exec start cycle on first execution
+          if (inst && inst.execStartCycle === undefined) {
+            inst.execStartCycle = state.cycle;
+          }
+          
+          buf.timeRemaining--;
+          console.log(`  ${buf.tag} executing (store latency): ${buf.timeRemaining} cycles remaining`);
+          
+          // If still executing, wait for next cycle
+          if (buf.timeRemaining > 0) {
+            return;
+          }
+          
+          // timeRemaining just reached 0, execution completes this cycle
+          // Fall through to set execEndCycle and check for conflicts
+        }
+        
+        // Execution complete (timeRemaining === 0)
+        // Set exec end cycle if not already set
+        if (inst && inst.execEndCycle === undefined) {
+          inst.execEndCycle = state.cycle;
+          console.log(`  ${buf.tag} execution complete, address: ${buf.address}, value: ${buf.value}`);
+        }
+        
+        // Check for memory conflicts with older loads (WAR hazards)
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.load, state.instructions, false, config.cache.blockSize, state.cycle)) {
+          console.log(`  ${buf.tag} blocked by memory conflict (WAR hazard)`);
+          return;
+        }
+        
+        // Check for memory conflicts with older stores (WAW hazards)
+        if (checkMemoryConflicts(buf, state.loadStoreBuffers.store, state.instructions, false, config.cache.blockSize, state.cycle)) {
+          console.log(`  ${buf.tag} blocked by memory conflict (WAW hazard)`);
+          return;
+        }
+        
+        // No conflicts, proceed to cache access
+        // Start cache access (miss penalty + hit latency, or just hit latency)
+        const { latency, hit } = accessCache(buf.address, config, state, getStoreSize(inst?.type));
+        (buf as any).cacheHit = hit;
+        
+        if (!hit) {
+          // Cache MISS: miss penalty + hit latency
+          buf.timeRemaining = config.cache.missLatency + config.cache.hitLatency;
+          (buf as any).cyclesUntilBlockLoaded = config.cache.missLatency;
+          buf.stage = 'CACHE_ACCESS';
+          console.log(`  ${buf.tag} starting cache access (MISS): ${config.cache.missLatency} cycles miss penalty + ${config.cache.hitLatency} cycle hit latency`);
+        } else {
+          // Cache HIT: just hit latency
+          buf.timeRemaining = config.cache.hitLatency;
+          buf.stage = 'CACHE_ACCESS';
+          console.log(`  ${buf.tag} starting cache access (HIT): ${config.cache.hitLatency} cycles hit latency`);
+        }
+        
+        // If latency is 0, mark as ready for write back but wait for next cycle
+        if (buf.timeRemaining === 0) {
+          // Cache access instant, mark ready for write back
+          if (!hit) {
+            loadBlockIntoCache(buf.address, config, state);
+          }
+          buf.stage = 'WRITE_BACK';
+          console.log(`  ${buf.tag} cache access complete (instant), ready to write back`);
+          // Always return - write back happens in the next cycle
+          return;
+        } else {
+          // Return here - don't start cache access in the same cycle we transition
+          return;
+        }
+      }
+    }
+    
+    // STAGE 2: CACHE_ACCESS (Miss penalty or hit latency)
+    if (buf.stage === 'CACHE_ACCESS') {
+      // Check if cache access is already complete (hit latency = 0)
+      if (buf.timeRemaining === 0) {
+        // Cache access complete, now write to memory and update cache
+        buf.stage = 'WRITE_BACK';
+        console.log(`  ${buf.tag} cache access complete, ready to write back`);
+        return;
+      }
+      
+      const wasCacheHit = (buf as any).cacheHit;
+      let cyclesUntilBlockLoaded = (buf as any).cyclesUntilBlockLoaded;
+      
+      // For cache miss, load block into cache after miss penalty
+      if (!wasCacheHit && cyclesUntilBlockLoaded !== undefined) {
+        cyclesUntilBlockLoaded--;
+        (buf as any).cyclesUntilBlockLoaded = cyclesUntilBlockLoaded;
+        
+        if (cyclesUntilBlockLoaded === 0 && buf.address !== null) {
+          // Miss penalty complete - load OLD block into cache
+          loadBlockIntoCache(buf.address, config, state);
+          console.log(`  ${buf.tag} cache miss penalty complete, block loaded`);
+        }
+      }
+      
       buf.timeRemaining--;
-      console.log(`  ${buf.tag} executing: ${buf.timeRemaining} cycles remaining`);
+      console.log(`  ${buf.tag} cache access: ${buf.timeRemaining} cycles remaining`);
       
       if (buf.timeRemaining === 0) {
-        // Store completes - write to memory
-        state.memory.set(buf.address, buf.value);
-        buf.busy = false;
+        // Cache access complete, now write to memory and update cache
+        buf.stage = 'WRITE_BACK';
+        console.log(`  ${buf.tag} cache access complete, ready to write back`);
       }
+      return;
+    }
+    
+    // STAGE 3: WRITE_BACK (Write to memory and update cache)
+    if (buf.stage === 'WRITE_BACK' && buf.address !== null && buf.value !== null) {
+      // Write to memory
+      const bufKey = `buf:${buf.tag}`;
+      const bigIntVal = bigIntValues.get(bufKey);
+      storeValueToMemory(buf.address, buf.value, inst?.type, state.memory, bigIntVal, state.memoryWrites, state.cycle);
+      
+      // Update cache with new value
+      const blockSize = config.cache.blockSize;
+      const cacheSize = config.cache.cacheSize;
+      const numCacheBlocks = cacheSize / blockSize;
+      const memoryBlockNum = Math.floor(buf.address / blockSize);
+      const cacheIndex = memoryBlockNum % numCacheBlocks;
+      
+      const cacheBlock = state.cache.get(cacheIndex);
+      if (cacheBlock && cacheBlock.valid && cacheBlock.tag === memoryBlockNum) {
+        // Update all bytes in cache that were written
+        const numBytes = getStoreSize(inst?.type);
+        for (let i = 0; i < numBytes; i++) {
+          const offsetInBlock = (buf.address + i) % blockSize;
+          const memValue = state.memory.get(buf.address + i) || 0;
+          cacheBlock.data[offsetInBlock] = memValue;
+        }
+        console.log(`  ${buf.tag} updated cache block ${cacheIndex} with ${numBytes} bytes`);
+      }
+      
+      buf.stage = 'COMPLETED';
+      buf.busy = false;
+      
+      if (inst) {
+        inst.writeResultCycle = state.cycle; // Stores complete at write-back
+      }
+      
+      console.log(`  ${buf.tag} stored value ${buf.value} to address ${buf.address}`);
     }
   });
 }
@@ -302,23 +1069,40 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
 function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   console.log("PHASE 3: Issue");
   
-  // Find next instruction to issue
-  const nextInst = state.instructions.find(i => i.issueCycle === undefined);
-  if (!nextInst) {
-    console.log("  No more instructions to issue");
+  // Check if there's a next instruction in the program to issue
+  if (state.nextInstructionIndex >= state.programInstructions.length) {
+    console.log(`  No more instructions to issue (reached end of program)`);
     return;
   }
+  
+  // Get the next instruction from the program
+  const programInst = state.programInstructions[state.nextInstructionIndex];
+  
+  // Create a new instruction entry for this issue (clone from program)
+  const nextId = state.instructions.length;
+  const nextInst: Instruction = {
+    id: nextId,
+    raw: programInst.raw,
+    type: programInst.type,
+    dest: programInst.dest,
+    src1: programInst.src1,
+    src2: programInst.src2,
+    immediate: programInst.immediate,
+    label: programInst.label,
+  };
   
   const type = nextInst.type;
   let targetStations: ReservationStation[] | LoadStoreBuffer[] = [];
   let isLoadStore = false;
   
   // Determine which RS/Buffer to use
-  if (type.includes('ADD') || type.includes('SUB') || type === 'DADDI' || type === 'DSUBI') {
+  if (type === 'DADDI' || type === 'DSUBI' || type === 'BNE' || type === 'BEQ') {
+    targetStations = state.reservationStations.intAdd;
+  } else if (type.includes('ADD') || type.includes('SUB')) {
     targetStations = state.reservationStations.add;
   } else if (type.includes('MUL') || type.includes('DIV')) {
     targetStations = state.reservationStations.mul;
-  } else if (type.startsWith('L') || type.includes('.D') && type.startsWith('L')) {
+  } else if (type.startsWith('L') || (type.includes('.') && type.startsWith('L'))) {
     targetStations = state.loadStoreBuffers.load;
     isLoadStore = true;
   } else if (type.startsWith('S')) {
@@ -334,29 +1118,103 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   }
   
   // Issue instruction
-  console.log(`  Issuing instruction ${nextInst.id}: ${nextInst.raw} to ${freeStation.tag}`);
+  const labelStr = nextInst.label ? `[${nextInst.label}] ` : '';
+  console.log(`  Issuing instruction ${nextInst.id}: ${labelStr}${nextInst.raw} to ${freeStation.tag}`);
+  
+  // Add this instruction to the issued instructions list
+  state.instructions.push(nextInst);
+  
+  // Mark the instruction as issued
   nextInst.issueCycle = state.cycle;
+  
+  // Move to next instruction in program
+  state.nextInstructionIndex++;
+  
   freeStation.busy = true;
   
   if (isLoadStore) {
     const buf = freeStation as LoadStoreBuffer;
-    // Calculate address
-    const baseReg = [...state.registers.int, ...state.registers.float]
-      .find(r => r.name === nextInst.src1);
+    buf.instructionId = nextInst.id;
+    buf.stage = 'ADDRESS_CALC';
+    buf.value = null;
+    buf.address = null;
+    buf.baseRegisterTag = null;
+    buf.storeValueTag = null;
+    
+    // Get base register for address calculation
+    const allRegs = [...state.registers.int, ...state.registers.float];
+    const baseReg = allRegs.find(r => r.name === nextInst.src1);
     const offset = nextInst.immediate || 0;
-    buf.address = (baseReg?.value || 0) + offset;
-    buf.timeRemaining = getInstructionLatency(type, config);
+    
+    if (type.startsWith('L')) {
+      // LOAD: Will calculate address over LOAD latency cycles
+      if (baseReg) {
+        if (baseReg.qi === null) {
+          // Base register ready, will calculate address during execution
+          buf.timeRemaining = getInstructionLatency(type as InstructionType, config);
+          console.log(`    Base register ${baseReg.name} ready, will compute address over ${buf.timeRemaining} cycles`);
+        } else {
+          // Base register not ready, wait for it
+          buf.baseRegisterTag = baseReg.qi;
+          buf.timeRemaining = 0;
+          console.log(`    Waiting for base register ${baseReg.name} from ${baseReg.qi}`);
+        }
+      } else {
+        // No base register (should not happen in valid code)
+        buf.timeRemaining = getInstructionLatency(type as InstructionType, config);
+      }
+    } else {
+      // STORE: Will execute for store latency cycles before cache access
+      const storeLatency = getInstructionLatency(type as InstructionType, config);
+      buf.timeRemaining = storeLatency;
+      buf.stage = 'EXECUTING';
+      
+      if (baseReg) {
+        if (baseReg.qi === null) {
+          buf.address = baseReg.value + offset;
+          console.log(`    Address calculated: ${baseReg.name}(${baseReg.value}) + ${offset} = ${buf.address}`);
+        } else {
+          buf.baseRegisterTag = baseReg.qi;
+          console.log(`    Waiting for base register ${baseReg.name} from ${baseReg.qi}`);
+        }
+      } else {
+        buf.address = offset;
+      }
+      
+      console.log(`    Store will execute for ${storeLatency} cycles before cache access`);
+    }
     
     if (type.startsWith('S')) {
-      // Store: need to get value from source register
-      const srcReg = [...state.registers.float, ...state.registers.int]
-        .find(r => r.name === nextInst.dest);
+      // STORE: need to get value from source register (dest field contains the source)
+      const srcReg = allRegs.find(r => r.name === nextInst.dest);
       if (srcReg) {
         if (srcReg.qi === null) {
           buf.value = srcReg.value;
+          // For SD from R registers, try to get the BigInt value
+          if (type === 'SD' && srcReg.type === 'INT') {
+            const regKey = `reg:${srcReg.name}`;
+            const bigIntVal = bigIntValues.get(regKey);
+            if (bigIntVal !== undefined) {
+              const bufKey = `buf:${buf.tag}`;
+              bigIntValues.set(bufKey, bigIntVal);
+              console.log(`    Store value ready: ${srcReg.name} = ${buf.value} (BigInt: 0x${bigIntVal.toString(16)})`);
+            } else {
+              console.log(`    Store value ready: ${srcReg.name} = ${buf.value}`);
+            }
+          } else {
+            console.log(`    Store value ready: ${srcReg.name} = ${buf.value}`);
+          }
         } else {
-          buf.value = null; // Wait for CDB
+          buf.storeValueTag = srcReg.qi;
+          console.log(`    Waiting for store value ${srcReg.name} from ${srcReg.qi}`);
         }
+      }
+    } else if (type.startsWith('L')) {
+      // LOAD: register renaming for destination
+      const destReg = allRegs.find(r => r.name === nextInst.dest);
+      if (destReg) {
+        destReg.qi = buf.tag;
+        console.log(`    Register ${destReg.name} renamed to ${buf.tag}`);
       }
     }
   } else {
@@ -364,40 +1222,55 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
     rs.op = type;
     rs.a = nextInst.immediate || null;
     rs.timeRemaining = getInstructionLatency(type, config);
+    rs.operandsReadyCycle = undefined; // Reset for new instruction
+    rs.instructionId = nextInst.id; // Track which instruction this is
     
     // Get source operands
     const allRegs = [...state.registers.float, ...state.registers.int];
     
+    console.log(`    Operands: src1=${nextInst.src1}, src2=${nextInst.src2}, dest=${nextInst.dest}`);
+    
     if (nextInst.src1) {
       const src1Reg = allRegs.find(r => r.name === nextInst.src1);
+      console.log(`    src1Reg found: ${src1Reg ? `${src1Reg.name}=${src1Reg.value}, qi=${src1Reg.qi}` : 'NOT FOUND'}`);
       if (src1Reg) {
         if (src1Reg.qi === null) {
           rs.vj = src1Reg.value;
           rs.qj = null;
+          console.log(`    Set Vj=${rs.vj}, Qj=${rs.qj}`);
         } else {
           rs.vj = null;
           rs.qj = src1Reg.qi;
-          console.log(`    RAW hazard: waiting for ${src1Reg.qi}`);
+          console.log(`    RAW hazard: waiting for ${src1Reg.qi}, set Vj=${rs.vj}, Qj=${rs.qj}`);
         }
       }
     }
     
-    if (nextInst.src2) {
+    // For DADDI/DSUBI, immediate goes into Vk, otherwise use src2 register
+    if (type === 'DADDI' || type === 'DSUBI') {
+      // Immediate value goes directly into Vk
+      rs.vk = nextInst.immediate !== undefined ? nextInst.immediate : 0;
+      rs.qk = null;
+      console.log(`    Immediate set: Vk=${rs.vk}, Qk=${rs.qk}`);
+    } else if (nextInst.src2) {
       const src2Reg = allRegs.find(r => r.name === nextInst.src2);
+      console.log(`    src2Reg found: ${src2Reg ? `${src2Reg.name}=${src2Reg.value}, qi=${src2Reg.qi}` : 'NOT FOUND'}`);
       if (src2Reg) {
         if (src2Reg.qi === null) {
           rs.vk = src2Reg.value;
           rs.qk = null;
+          console.log(`    Set Vk=${rs.vk}, Qk=${rs.qk}`);
         } else {
           rs.vk = null;
           rs.qk = src2Reg.qi;
-          console.log(`    RAW hazard: waiting for ${src2Reg.qi}`);
+          console.log(`    RAW hazard: waiting for ${src2Reg.qi}, set Vk=${rs.vk}, Qk=${rs.qk}`);
         }
       }
     }
     
     // Register renaming (WAR/WAW handling)
-    if (nextInst.dest) {
+    // Branch instructions (BNE, BEQ) don't write to registers, so skip renaming
+    if (nextInst.dest && type !== 'BNE' && type !== 'BEQ') {
       const destReg = allRegs.find(r => r.name === nextInst.dest);
       if (destReg) {
         destReg.qi = rs.tag;
@@ -407,8 +1280,445 @@ function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   }
 }
 
+/**
+ * Check for memory conflicts (RAW, WAR, WAW) between memory operations
+ * @param currentBuf - The current buffer checking for conflicts
+ * @param otherBuffers - Other buffers to check against
+ * @param instructions - All instructions for ordering
+ * @param isLoad - True if checking for a LOAD, false for STORE
+ * @param blockSize - Cache block size for checking same block conflicts
+ * @returns True if there's a conflict (should block), false otherwise
+ */
+function checkMemoryConflicts(
+  currentBuf: LoadStoreBuffer,
+  otherBuffers: LoadStoreBuffer[],
+  instructions: Instruction[],
+  isLoad: boolean,
+  blockSize: number,
+  currentCycle?: number
+): boolean {
+  const currentInst = instructions.find(i => i.id === currentBuf.instructionId);
+  if (!currentInst || currentBuf.address === null) return false;
+  
+  const currentBlockNum = Math.floor(currentBuf.address / blockSize);
+  
+  for (const otherBuf of otherBuffers) {
+    if (!otherBuf.busy || otherBuf.address === null) continue;
+    if (otherBuf.tag === currentBuf.tag) continue;
+    
+    const otherInst = instructions.find(i => i.id === otherBuf.instructionId);
+    if (!otherInst) continue;
+    
+    // Check if addresses conflict (same cache block)
+    const otherBlockNum = Math.floor(otherBuf.address / blockSize);
+    if (currentBlockNum !== otherBlockNum) continue;
+    
+    // Check program order: only block if the other instruction is older
+    const isOlder = otherInst.id < currentInst.id;
+    if (!isOlder) continue;
+    
+    // Check if the other instruction is still in progress
+    // For LOADS: can proceed when older store is in WRITE_BACK (block already in cache)
+    // For STORES: must wait until older instruction has broadcast its result
+    //             For WAR: store must wait until load broadcasts (writeResultCycle defined) + 1 cycle
+    //             For WAW: store must wait until older store is fully COMPLETED
+    let otherComplete: boolean;
+    if (isLoad) {
+      // Load can proceed when store is in WRITE_BACK or COMPLETED
+      otherComplete = otherBuf.stage === 'COMPLETED' || otherBuf.stage === 'WRITE_BACK' || !otherBuf.busy;
+    } else {
+      // Store must wait until other instruction has written its result
+      // WAR hazard: Store must wait until load broadcasts + 1 cycle
+      // Check if the other instruction has broadcast its result
+      const hasBroadcast = otherInst.writeResultCycle !== undefined;
+      
+      // If just broadcast this cycle, store must still wait one more cycle
+      const justBroadcast = currentCycle !== undefined && 
+                            otherInst.writeResultCycle === currentCycle;
+      
+      // Other is complete if it has broadcast AND it's not the same cycle
+      otherComplete = hasBroadcast && !justBroadcast;
+    }
+    if (otherComplete) continue;
+    
+    // Conflict found
+    if (isLoad) {
+      // LOAD blocked by older STORE with same cache block (RAW hazard)
+      console.log(`    RAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address} (block ${currentBlockNum})`);
+    } else {
+      // STORE blocked by older LOAD or STORE with same cache block (WAR/WAW hazard)
+      console.log(`    WAR/WAW hazard: ${currentBuf.tag} blocked by older ${otherBuf.tag} at address ${currentBuf.address} (block ${currentBlockNum})`);
+    }
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Check if any earlier stores are writing to the same cache block
+ * Load must wait until those stores complete their write-back
+ */
+function hasPendingStoresToSameBlock(
+  loadBuf: LoadStoreBuffer,
+  storeBuffers: LoadStoreBuffer[],
+  instructions: Instruction[],
+  blockSize: number
+): boolean {
+  const loadInst = instructions.find(i => i.id === loadBuf.instructionId);
+  if (!loadInst || loadBuf.address === null) return false;
+  
+  const loadBlockNum = Math.floor(loadBuf.address / blockSize);
+  
+  for (const storeBuf of storeBuffers) {
+    if (!storeBuf.busy || storeBuf.address === null) continue;
+    
+    const storeInst = instructions.find(i => i.id === storeBuf.instructionId);
+    if (!storeInst) continue;
+    
+    // Only check earlier stores (program order)
+    if (storeInst.id >= loadInst.id) continue;
+    
+    // Check if store is to the same cache block
+    const storeBlockNum = Math.floor(storeBuf.address / blockSize);
+    if (storeBlockNum !== loadBlockNum) continue;
+    
+    // Check if store has completed or is in write-back phase (completes this cycle)
+    if (storeBuf.stage === 'COMPLETED' || storeBuf.stage === 'WRITE_BACK' || !storeBuf.busy) continue;
+    
+    // Found a pending store to same block
+    console.log(`    ${loadBuf.tag} blocked: earlier store ${storeBuf.tag} (stage: ${storeBuf.stage}) to same block ${loadBlockNum}`);
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Check cache for hit/miss and return latency (does NOT update cache)
+ * Cache is direct-mapped: cache_index = block_number % num_cache_blocks
+ * Block number = address / block_size
+ * @param address - Memory address to access
+ * @param config - Simulator configuration
+ * @param state - Current simulator state
+ * @param accessSize - Size in bytes (4 for word, 8 for double)
+ * @returns Object with latency, hit/miss status, and cache location info
+ */
+function accessCache(
+  address: number,
+  config: SimulatorConfig,
+  state: SimulatorState,
+  accessSize: number
+): { latency: number; hit: boolean; cacheIndex: number; memoryBlockNum: number } {
+  const blockSize = config.cache.blockSize;
+  const cacheSize = config.cache.cacheSize;
+  const numCacheBlocks = cacheSize / blockSize;
+  
+  // Calculate which memory block this address belongs to
+  const memoryBlockNum = Math.floor(address / blockSize);
+  
+  // Calculate cache index (direct-mapped)
+  const cacheIndex = memoryBlockNum % numCacheBlocks;
+  
+  // Check if block is in cache
+  const cacheBlock = state.cache.get(cacheIndex);
+  
+  if (cacheBlock && cacheBlock.valid && cacheBlock.tag === memoryBlockNum) {
+    // Cache hit
+    console.log(`    Cache HIT at address ${address} (mem block ${memoryBlockNum} -> cache index ${cacheIndex})`);
+    return { latency: config.cache.hitLatency, hit: true, cacheIndex, memoryBlockNum };
+  } else {
+    // Cache miss - will need to fetch block from memory
+    // Total latency = miss penalty + hit latency, but block appears after miss penalty only
+    console.log(`    Cache MISS at address ${address} (mem block ${memoryBlockNum} -> cache index ${cacheIndex})`);
+    return { latency: config.cache.missLatency + config.cache.hitLatency, hit: false, cacheIndex, memoryBlockNum };
+  }
+}
+
+/**
+ * Load a block into the cache (called after miss penalty completes)
+ */
+function loadBlockIntoCache(
+  address: number,
+  config: SimulatorConfig,
+  state: SimulatorState
+): void {
+  const blockSize = config.cache.blockSize;
+  const cacheSize = config.cache.cacheSize;
+  const numCacheBlocks = cacheSize / blockSize;
+  
+  const memoryBlockNum = Math.floor(address / blockSize);
+  const cacheIndex = memoryBlockNum % numCacheBlocks;
+  
+  // Fetch entire block from memory
+  const blockStartAddr = memoryBlockNum * blockSize;
+  const blockData: number[] = [];
+  for (let i = 0; i < blockSize; i++) {
+    blockData.push(state.memory.get(blockStartAddr + i) || 0);
+  }
+  
+  // Update cache with new block
+  state.cache.set(cacheIndex, {
+    tag: memoryBlockNum,
+    data: blockData,
+    valid: true
+  });
+  
+  console.log(`    Block ${memoryBlockNum} loaded into cache index ${cacheIndex}`);
+}
+
+/**
+ * Load value from memory with proper byte ordering and sign extension
+ * @param address - Starting memory address
+ * @param type - Instruction type (L.S, L.D, etc.)
+ * @param memory - Memory map
+ * @returns Object with value and optional bigIntValue for LD instructions
+ */
+function loadValueFromMemory(
+  address: number,
+  type: InstructionType | undefined,
+  memory: Map<number, number>
+): { value: number; bigIntValue?: bigint } {
+  if (!type) return { value: memory.get(address) || 0 };
+  
+  // Determine how many bytes to load
+  const isDoublePrecision = type === 'LD' || type === 'L.D';
+  const numBytes = isDoublePrecision ? 8 : 4;
+  
+  // Load bytes from memory (little-endian: LSB at lowest address)
+  // For address 20: M20 (LSB), M21, M22, M23 (MSB for 4 bytes)
+  const bytes: number[] = [];
+  for (let i = 0; i < numBytes; i++) {
+    bytes.push(memory.get(address + i) || 0);
+  }
+  
+  console.log(`    Loading ${numBytes} bytes from address ${address}: [${bytes.join(', ')}]`);
+  
+  if (isDoublePrecision) {
+    if (type === 'LD') {
+      // LD: Load 8 bytes as 64-bit INTEGER (not floating point)
+      // Read lower 32-bit word (bytes 0-3)
+      let lowerWord = 0;
+      for (let i = 0; i < 4; i++) {
+        lowerWord |= (bytes[i] & 0xFF) << (i * 8);
+      }
+      lowerWord = lowerWord >>> 0; // Unsigned 32-bit
+      
+      // Read upper 32-bit word (bytes 4-7)
+      let upperWord = 0;
+      for (let i = 0; i < 4; i++) {
+        upperWord |= (bytes[4 + i] & 0xFF) << (i * 8);
+      }
+      upperWord = upperWord >>> 0; // Unsigned 32-bit
+      
+      // Combine using BigInt for 64-bit integer precision
+      const lowerBigInt = BigInt(lowerWord);
+      const upperBigInt = BigInt(upperWord);
+      const combined = lowerBigInt | (upperBigInt << 32n);
+      
+      console.log(`    LD (64-bit integer): Lower=0x${lowerWord.toString(16).padStart(8, '0')}, Upper=0x${upperWord.toString(16).padStart(8, '0')}`);
+      console.log(`    Combined BigInt value: 0x${combined.toString(16).padStart(16, '0')}`);
+      
+      const value = Number(combined); // May lose precision but needed for compatibility
+      console.log(`    Returning value: ${value} with BigInt: 0x${combined.toString(16)}`);
+      
+      return { value, bigIntValue: combined };
+    } else {
+      // L.D: Load 8 bytes as IEEE 754 DOUBLE-PRECISION FLOAT
+      // Create DataView to interpret bytes as double-precision float
+      const buffer = new ArrayBuffer(8);
+      const view = new DataView(buffer);
+      
+      // Write bytes in little-endian order
+      for (let i = 0; i < 8; i++) {
+        view.setUint8(i, bytes[i]);
+      }
+      
+      // Read as double-precision float (little-endian)
+      const value = view.getFloat64(0, true);
+      
+      console.log(`    L.D (double-precision float): ${value}`);
+      return { value };
+    }
+  } else {
+    if (type === 'LW') {
+      // LW: Load 4 bytes as 32-bit INTEGER with sign extension
+      let value = 0;
+      for (let i = 0; i < 4; i++) {
+        value |= (bytes[i] & 0xFF) << (i * 8);
+      }
+      
+      // Sign extend to 64-bit
+      value = value | 0; // Force to signed 32-bit
+      
+      console.log(`    LW (32-bit signed integer): ${value}`);
+      return { value };
+    } else {
+      // L.S: Load 4 bytes as IEEE 754 SINGLE-PRECISION FLOAT (32-bit)
+      // Store the raw 32-bit pattern as an integer to preserve single-precision format
+      let rawBits = 0;
+      for (let i = 0; i < 4; i++) {
+        rawBits |= (bytes[i] & 0xFF) << (i * 8);
+      }
+      rawBits = rawBits >>> 0; // Ensure unsigned 32-bit
+      
+      // For display purposes, also show the float value
+      const buffer = new ArrayBuffer(4);
+      const view = new DataView(buffer);
+      view.setUint32(0, rawBits, true);
+      const floatValue = view.getFloat32(0, true);
+      
+      console.log(`    L.S (single-precision float): ${floatValue} (raw bits: 0x${rawBits.toString(16).padStart(8, '0')})`);
+      
+      // Store the raw 32-bit pattern as the value (preserves single-precision)
+      return { value: rawBits };
+    }
+  }
+}
+
+/**
+ * Store value to memory with proper byte ordering
+ * @param address - Starting memory address
+ * @param value - Value to store
+ * @param type - Instruction type (S.S, S.D, etc.)
+ * @param memory - Memory map
+ * @param bigIntValue - Optional BigInt value for SD instructions (preserves precision)
+ */
+function storeValueToMemory(
+  address: number,
+  value: number,
+  type: InstructionType | undefined,
+  memory: Map<number, number>,
+  bigIntValue?: bigint,
+  memoryWrites?: Map<number, { value: number; cycle: number }>,
+  cycle?: number
+): void {
+  if (!type) {
+    memory.set(address, value);
+    return;
+  }
+  
+  // Determine how many bytes to store
+  const isDoublePrecision = type === 'SD' || type === 'S.D';
+  const numBytes = isDoublePrecision ? 8 : 4;
+  
+  console.log(`    Storing ${numBytes} bytes to address ${address}, value: ${value}${bigIntValue ? ` (BigInt: 0x${bigIntValue.toString(16)})` : ''}`);
+  
+  // Store bytes to memory (little-endian: LSB at lowest address)
+  if (type === 'SD') {
+    // SD: Store 8 bytes as 64-bit INTEGER
+    if (bigIntValue !== undefined) {
+      // Use BigInt for exact precision
+      for (let i = 0; i < 8; i++) {
+        const byte = Number((bigIntValue >> BigInt(i * 8)) & 0xFFn);
+        memory.set(address + i, byte);
+        if (memoryWrites && cycle !== undefined) {
+          memoryWrites.set(address + i, { value: byte, cycle });
+        }
+        console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+      }
+    } else {
+      // Fallback to Number (may lose precision)
+      for (let i = 0; i < 8; i++) {
+        const byte = Math.floor(value / Math.pow(2, i * 8)) & 0xFF;
+        memory.set(address + i, byte);
+        if (memoryWrites && cycle !== undefined) {
+          memoryWrites.set(address + i, { value: byte, cycle });
+        }
+        console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+      }
+    }
+  } else if (type === 'S.D') {
+    // S.D: Store 8 bytes as IEEE 754 DOUBLE-PRECISION FLOAT
+    const buffer = new ArrayBuffer(8);
+    const view = new DataView(buffer);
+    view.setFloat64(0, value, true); // true = little-endian
+    
+    for (let i = 0; i < 8; i++) {
+      const byte = view.getUint8(i);
+      memory.set(address + i, byte);
+      if (memoryWrites && cycle !== undefined) {
+        memoryWrites.set(address + i, { value: byte, cycle });
+      }
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
+  } else if (type === 'SW') {
+    // SW: Store 4 bytes as 32-bit INTEGER
+    const valueToStore = Math.trunc(value) & 0xFFFFFFFF;
+    for (let i = 0; i < 4; i++) {
+      const byte = (valueToStore >> (i * 8)) & 0xFF;
+      memory.set(address + i, byte);
+      if (memoryWrites && cycle !== undefined) {
+        memoryWrites.set(address + i, { value: byte, cycle });
+      }
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
+  } else if (type === 'S.S') {
+    // S.S: Store 4 bytes as IEEE 754 SINGLE-PRECISION FLOAT
+    const buffer = new ArrayBuffer(4);
+    const view = new DataView(buffer);
+    
+    // Check if value is a raw 32-bit pattern (from L.S) or actual float
+    // If it's within 32-bit unsigned range and is an integer, treat as raw bits
+    if (Number.isInteger(value) && value >= 0 && value <= 0xFFFFFFFF) {
+      // Raw 32-bit pattern from L.S - store as-is
+      view.setUint32(0, value, true);
+    } else {
+      // Actual float value - convert to single-precision
+      view.setFloat32(0, value, true);
+    }
+    
+    for (let i = 0; i < 4; i++) {
+      const byte = view.getUint8(i);
+      memory.set(address + i, byte);
+      if (memoryWrites && cycle !== undefined) {
+        memoryWrites.set(address + i, { value: byte, cycle });
+      }
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
+  } else {
+    // Default: store as 4-byte integer
+    const valueToStore = Math.trunc(value) & 0xFFFFFFFF;
+    for (let i = 0; i < 4; i++) {
+      const byte = (valueToStore >> (i * 8)) & 0xFF;
+      memory.set(address + i, byte);
+      if (memoryWrites && cycle !== undefined) {
+        memoryWrites.set(address + i, { value: byte, cycle });
+      }
+      console.log(`      M[${address + i}] = 0x${byte.toString(16).padStart(2, '0')} (${byte})`);
+    }
+  }
+}
+
+/**
+ * Get the size in bytes for a LOAD instruction
+ */
+function getLoadSize(type?: InstructionType): number {
+  if (!type) return 4;
+  
+  // LW, L.S = 4 bytes (word/single-precision float)
+  // LD, L.D = 8 bytes (double word/double-precision float)
+  if (type === 'LD' || type === 'L.D') return 8;
+  return 4;
+}
+
+/**
+ * Get the size in bytes for a STORE instruction
+ */
+function getStoreSize(type?: InstructionType): number {
+  if (!type) return 4;
+  
+  // SW, S.S = 4 bytes (word/single-precision float)
+  // SD, S.D = 8 bytes (double word/double-precision float)
+  if (type === 'SD' || type === 'S.D') return 8;
+  return 4;
+}
+
 export function getInstructionLatency(type: InstructionType, config: SimulatorConfig): number {
-  if (type.includes('ADD') || type.includes('SUB') || type.includes('DADDI') || type.includes('DSUBI')) {
+  if (type === 'DADDI' || type === 'DSUBI' || type === 'BNE' || type === 'BEQ') {
+    return config.latencies.INT_ADD;
+  }
+  if (type.includes('ADD') || type.includes('SUB')) {
     return config.latencies.ADD;
   }
   if (type.includes('MUL')) {
@@ -417,11 +1727,23 @@ export function getInstructionLatency(type: InstructionType, config: SimulatorCo
   if (type.includes('DIV')) {
     return config.latencies.DIV;
   }
-  if (type.startsWith('L') || type.includes('.D') || type.includes('.S')) {
+  // Only treat explicit load mnemonics as LOAD latency
+  if (type.startsWith('L')) {
     return config.latencies.LOAD;
   }
+  // Stores use STORE latency
   if (type.startsWith('S')) {
     return config.latencies.STORE;
   }
   return 1;
+}
+
+// Helper function to get BigInt value for a register (for display purposes)
+export function getRegisterBigIntValue(registerName: string): bigint | undefined {
+  return bigIntValues.get(`reg:${registerName}`);
+}
+
+// Helper function to clear BigInt values (when simulation is reset)
+export function clearBigIntValues(): void {
+  bigIntValues.clear();
 }

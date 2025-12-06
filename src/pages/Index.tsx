@@ -8,7 +8,10 @@ import { InstructionStatusTable } from "@/components/simulator/InstructionStatus
 import { ReservationStationTable } from "@/components/simulator/ReservationStationTable";
 import { RegisterFileTable } from "@/components/simulator/RegisterFileTable";
 import { LoadStoreBufferTable } from "@/components/simulator/LoadStoreBufferTable";
-import { parseInstructions, initializeSimulatorState, executeSimulationStep } from "@/lib/tomasuloEngine";
+import { MemoryTable } from "@/components/simulator/MemoryTable";
+import { CacheTable } from "@/components/simulator/CacheTable";
+import { MemoryWritesTable } from "@/components/simulator/MemoryWritesTable";
+import { parseInstructions, initializeSimulatorState, executeSimulationStep, clearBigIntValues } from "@/lib/tomasuloEngine";
 import { useToast } from "@/hooks/use-toast";
 
 const defaultConfig: SimulatorConfig = {
@@ -16,12 +19,14 @@ const defaultConfig: SimulatorConfig = {
     ADD: 2,
     MUL: 10,
     DIV: 40,
+    INT_ADD: 1,
     LOAD: 2,
     STORE: 2,
   },
   reservationStations: {
     adders: 3,
     multipliers: 2,
+    intAdders: 2,
     loadBuffers: 3,
     storeBuffers: 3,
   },
@@ -31,6 +36,7 @@ const defaultConfig: SimulatorConfig = {
     hitLatency: 1,
     missLatency: 10,
   },
+  isOptimizationMode: false,
 };
 
 const Index = () => {
@@ -39,7 +45,21 @@ const Index = () => {
   const [state, setState] = useState<SimulatorState | null>(null);
   const { toast } = useToast();
 
+  const handleConfigChange = (newConfig: SimulatorConfig) => {
+    setConfig(newConfig);
+  };
+
   const handleLoadProgram = () => {
+    // Validate cache configuration before loading
+    if (config.cache.cacheSize % config.cache.blockSize !== 0) {
+      toast({
+        title: "Invalid Cache Configuration",
+        description: `Cache Size (${config.cache.cacheSize}) must be divisible by Block Size (${config.cache.blockSize}). Please adjust the values.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    
     try {
       const instructions = parseInstructions(code);
       if (instructions.length === 0) {
@@ -59,9 +79,10 @@ const Index = () => {
         description: `${instructions.length} instruction(s) loaded successfully.`,
       });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to parse assembly code. Check syntax.";
       toast({
         title: "Parse Error",
-        description: "Failed to parse assembly code. Check syntax.",
+        description: errorMessage,
         variant: "destructive",
       });
     }
@@ -87,10 +108,57 @@ const Index = () => {
 
   const handleReset = () => {
     setState(null);
+    clearBigIntValues();
     toast({
       title: "Simulator Reset",
       description: "All state has been cleared.",
     });
+  };
+
+  const handleRegisterValueChange = (registerName: string, newValue: number) => {
+    if (!state || state.cycle > 0) return; // Only allow editing before execution starts
+    
+    const newState = { ...state };
+    
+    // Find and update the register in either int or float arrays
+    const intReg = newState.registers.int.find(r => r.name === registerName);
+    const floatReg = newState.registers.float.find(r => r.name === registerName);
+    
+    if (intReg) {
+      intReg.value = Math.floor(newValue); // Integer registers should be whole numbers
+    } else if (floatReg) {
+      floatReg.value = newValue;
+    }
+    
+    setState(newState);
+  };
+
+  const handleMemoryValueChange = (address: number, newValue: number) => {
+    if (!state || state.cycle > 0) return;
+    
+    const newState = { ...state };
+    // Ensure value is within byte range (0-255)
+    const byteValue = Math.max(0, Math.min(255, Math.floor(newValue))) & 0xFF;
+    newState.memory.set(address, byteValue);
+    setState(newState);
+  };
+
+  const handleMemoryDelete = (address: number) => {
+    if (!state || state.cycle > 0) return;
+    
+    const newState = { ...state };
+    newState.memory.delete(address);
+    setState(newState);
+  };
+
+  const handleMemoryAdd = (address: number, value: number) => {
+    if (!state || state.cycle > 0) return;
+    
+    const newState = { ...state };
+    // Ensure value is within byte range (0-255)
+    const byteValue = Math.max(0, Math.min(255, Math.floor(value))) & 0xFF;
+    newState.memory.set(address, byteValue);
+    setState(newState);
   };
 
   // Auto-run effect
@@ -143,7 +211,7 @@ const Index = () => {
           {/* Left Sidebar - Configuration */}
           <div className="col-span-12 lg:col-span-3 space-y-4">
             <InstructionInput code={code} onCodeChange={setCode} />
-            <ConfigPanel config={config} onConfigChange={setConfig} />
+            <ConfigPanel config={config} onConfigChange={handleConfigChange} />
           </div>
 
           {/* Main Dashboard */}
@@ -176,7 +244,7 @@ const Index = () => {
                 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                   <ReservationStationTable 
-                    title="Add/Sub Reservation Stations"
+                    title="FP Add/Sub Reservation Stations"
                     stations={state.reservationStations.add}
                   />
                   <ReservationStationTable 
@@ -186,10 +254,17 @@ const Index = () => {
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  <ReservationStationTable 
+                    title="Integer Add/Sub Reservation Stations"
+                    stations={state.reservationStations.intAdd}
+                  />
                   <LoadStoreBufferTable 
                     title="Load Buffers"
                     buffers={state.loadStoreBuffers.load}
                   />
+                </div>
+
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                   <LoadStoreBufferTable 
                     title="Store Buffers"
                     buffers={state.loadStoreBuffers.store}
@@ -200,12 +275,37 @@ const Index = () => {
                   <RegisterFileTable 
                     title="Floating Point Registers"
                     registers={state.registers.float}
+                    isEditable={state.cycle === 0}
+                    onValueChange={handleRegisterValueChange}
                   />
                   <RegisterFileTable 
                     title="Integer Registers"
                     registers={state.registers.int}
+                    isEditable={state.cycle === 0}
+                    onValueChange={handleRegisterValueChange}
                   />
                 </div>
+
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  <MemoryTable
+                    memory={state.memory}
+                    isEditable={state.cycle === 0}
+                    onMemoryChange={handleMemoryValueChange}
+                    onMemoryDelete={handleMemoryDelete}
+                    onMemoryAdd={handleMemoryAdd}
+                  />
+                  <CacheTable
+                    cache={state.cache}
+                    blockSize={config.cache.blockSize}
+                    cacheSize={config.cache.cacheSize}
+                  />
+                </div>
+
+                {state.isComplete && state.memoryWrites && state.memoryWrites.size > 0 && (
+                  <div className="mt-4">
+                    <MemoryWritesTable memoryWrites={state.memoryWrites} />
+                  </div>
+                )}
               </>
             ) : (
               <div className="flex items-center justify-center py-32 border border-border border-dashed rounded-lg bg-card/50">
