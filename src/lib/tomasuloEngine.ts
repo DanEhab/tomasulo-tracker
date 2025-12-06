@@ -701,7 +701,7 @@ function writeResultPhase(state: SimulatorState, config: SimulatorConfig): void 
     
     // Handle branch instructions (BNE, BEQ)
     if (inst && (inst.type === 'BNE' || inst.type === 'BEQ')) {
-      const branchTaken = (inst.type === 'BNE' && value !== 0) || (inst.type === 'BEQ' && value === 0);
+      const branchTaken = (inst.type === 'BNE' && value !== 0) || (inst.type === 'BEQ' && value !== 0);
       
       if (branchTaken && inst.dest) {
         // Branch is taken - find the label in program instructions
