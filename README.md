@@ -9,10 +9,13 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8.3-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-5.4.19-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4.17-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![CI](https://github.com/DanEhab/tomasulo-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/DanEhab/tomasulo-tracker/actions/workflows/ci.yml)
 
 **A robust, interactive React-based simulator that visualizes cycle-by-cycle instruction execution, out-of-order processing, dynamic scheduling, register renaming, and memory hierarchy behaviors in the Tomasulo Algorithm.**
 
-[Features](#-core-features) • [Getting Started](#-getting-started) • [Documentation](#-documentation) • [Tech Stack](#-tech-stack) • [Screenshots](#-screenshots)
+### [▶ Try it live](https://danehab.github.io/tomasulo-tracker/)
+
+[Features](#-core-features) • [Getting Started](#-getting-started) • [Tests](#-tests) • [Documentation](#-documentation) • [Tech Stack](#-tech-stack) • [Screenshots](#-screenshots)
 
 </div>
 
@@ -25,11 +28,12 @@
 - [Supported Instructions](#-supported-instructions)
 - [Tech Stack](#-tech-stack)
 - [Getting Started](#-getting-started)
+- [Tests](#-tests)
 - [Documentation](#-documentation)
 - [Project Structure](#-project-structure)
 - [Configuration](#-configuration)
 - [Screenshots](#-screenshots)
-- [Contributing](#-contributing)
+- [Team & Course](#-team--course)
 
 ---
 
@@ -128,7 +132,7 @@ Ensure you have **Node.js** (v16 or higher) and **npm** installed on your system
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/tomasulo-tracker.git
+   git clone https://github.com/DanEhab/tomasulo-tracker.git
    cd tomasulo-tracker
    ```
 
@@ -155,6 +159,23 @@ npm run build
 # Preview production build locally
 npm run preview
 ```
+
+---
+
+## 🧪 Tests
+
+[`src/lib/tomasuloEngine.test.ts`](src/lib/tomasuloEngine.test.ts) runs 15 programs through the simulation engine and checks what Tomasulo's algorithm guarantees:
+
+- **Results**: integer and floating-point arithmetic, and a load that reads the value a store just wrote to the same address.
+- **Register renaming**: an older instruction keeps the old value of a register that a newer one overwrites (WAR), the last writer wins even when an older instruction finishes later (WAW), and a dependent instruction starts only after its operand is broadcast (RAW).
+- **Timing**: in-order issue, at most one result on the common data bus per cycle, the configured latencies, and a stall when every reservation station of a type is busy.
+- **Branches**: loops run the right number of times, and nothing is issued while a branch is unresolved.
+
+```bash
+npm test
+```
+
+GitHub Actions runs the tests, a type check and a production build on every push, and deploys the [live demo](https://danehab.github.io/tomasulo-tracker/) from `main`.
 
 ---
 
@@ -250,15 +271,13 @@ The simulator provides extensive configuration options through the **Config Pane
 
 ---
 
-## 🤝 Contributing
+## 👥 Team & Course
 
-Contributions are welcome! Whether you're fixing bugs, improving documentation, or adding new features:
+Built for **Microprocessors (CSEN 702)** at the German University in Cairo, Winter 2025, as the project of Team 52.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Developed mainly by **Daniel Ehab**, with help from Samuel Atef, Karma Emad, Noura Fady, Marc Georges and Daniel Maged.
+
+**After the submission:** instructions that came after an unresolved branch used to be issued and executed anyway, so code after a loop ran once per iteration. Issue now waits for the branch to resolve, as it should without branch prediction, and the engine has automated tests.
 
 ---
 
