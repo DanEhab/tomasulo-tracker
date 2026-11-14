@@ -1068,7 +1068,19 @@ function executePhase(state: SimulatorState, config: SimulatorConfig): void {
 
 function issuePhase(state: SimulatorState, config: SimulatorConfig): void {
   console.log("PHASE 3: Issue");
-  
+
+  // There is no branch prediction: while a branch is waiting to be resolved, nothing else
+  // is issued, so no instruction from the wrong path can execute or write a register.
+  // The branch resolves in the write-result phase of a cycle, and the next instruction
+  // (or the branch target) issues in that same cycle.
+  const branchPending = state.instructions.some(
+    inst => (inst.type === 'BNE' || inst.type === 'BEQ') && inst.writeResultCycle === undefined
+  );
+  if (branchPending) {
+    console.log(`  Waiting for the branch to resolve before issuing`);
+    return;
+  }
+
   // Check if there's a next instruction in the program to issue
   if (state.nextInstructionIndex >= state.programInstructions.length) {
     console.log(`  No more instructions to issue (reached end of program)`);
